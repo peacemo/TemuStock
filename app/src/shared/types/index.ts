@@ -24,7 +24,7 @@ export interface MemberWithLedger extends Member {
 
 export interface BuyParticipantInput {
   memberId: string;
-  amount: string;
+  shares: string;
 }
 
 export interface SellParticipantInput {
@@ -53,7 +53,7 @@ export interface CreateMemberRequest {
   name: string;
   joinDate: string;
   initialCash: string;
-  immediateBuyAmount?: string;
+  immediateBuyShares?: string;
   immediateBuyPrice?: string;
 }
 

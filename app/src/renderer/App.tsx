@@ -23,7 +23,7 @@ export const App = () => {
   const [newMemberName, setNewMemberName] = useState('');
   const [newMemberCash, setNewMemberCash] = useState('10000');
   const [newMemberImmediateBuy, setNewMemberImmediateBuy] = useState(false);
-  const [newMemberBuyAmount, setNewMemberBuyAmount] = useState('0');
+  const [newMemberBuyShares, setNewMemberBuyShares] = useState('0');
   const [newMemberBuyPrice, setNewMemberBuyPrice] = useState('10.000');
 
   const [buyPrice, setBuyPrice] = useState('10.000');
@@ -31,6 +31,12 @@ export const App = () => {
 
   const [sellPrice, setSellPrice] = useState('10.000');
   const [sellParticipants, setSellParticipants] = useState<SellParticipantInput[]>([]);
+
+  const [confirmDialog, setConfirmDialog] = useState<{
+    title: string;
+    lines: string[];
+    onConfirm: () => Promise<void>;
+  } | null>(null);
 
   const [dividendPerShare, setDividendPerShare] = useState('0.5');
   const [historyQueryTime, setHistoryQueryTime] = useState('');
@@ -89,7 +95,7 @@ export const App = () => {
       if (previous.length > 0) {
         return previous;
       }
-      return [{ memberId: activeMembers[0].id, amount: '1000' }];
+      return [{ memberId: activeMembers[0].id, shares: '100' }];
     });
 
     setSellParticipants((previous) => {
@@ -104,7 +110,7 @@ export const App = () => {
     if (!activeMembers.length) {
       return;
     }
-    setBuyParticipants((previous) => [...previous, { memberId: activeMembers[0].id, amount: '0' }]);
+    setBuyParticipants((previous) => [...previous, { memberId: activeMembers[0].id, shares: '0' }]);
   };
 
   const removeBuyParticipant = (index: number) => {
@@ -140,7 +146,7 @@ export const App = () => {
       name: newMemberName,
       joinDate: nowIsoLocal(),
       initialCash: newMemberCash,
-      immediateBuyAmount: newMemberImmediateBuy ? newMemberBuyAmount : undefined,
+      immediateBuyShares: newMemberImmediateBuy ? newMemberBuyShares : undefined,
       immediateBuyPrice: newMemberImmediateBuy ? newMemberBuyPrice : undefined,
     });
 
@@ -151,12 +157,12 @@ export const App = () => {
 
     setNewMemberName('');
     setNewMemberImmediateBuy(false);
-    setNewMemberBuyAmount('0');
+    setNewMemberBuyShares('0');
     setMessage('成员创建成功');
     await refresh();
   };
 
-  const submitBuy = async (event: FormEvent) => {
+  const submitBuy = (event: FormEvent) => {
     event.preventDefault();
 
     if (!buyParticipants.length) {
@@ -164,22 +170,36 @@ export const App = () => {
       return;
     }
 
-    const result = await window.desktopApi.executeBuy({
-      transTime: nowIsoLocal(),
-      price: buyPrice,
-      participants: buyParticipants,
+    const lines = [
+      `买入价格：${buyPrice}`,
+      ...buyParticipants.map((p) => {
+        const m = activeMembers.find((member) => member.id === p.memberId);
+        return `${m?.name ?? p.memberId}：${p.shares} 股`;
+      }),
+    ];
+
+    setConfirmDialog({
+      title: '确认买入',
+      lines,
+      onConfirm: async () => {
+        const result = await window.desktopApi.executeBuy({
+          transTime: nowIsoLocal(),
+          price: buyPrice,
+          participants: buyParticipants,
+        });
+
+        if (!result.ok) {
+          setMessage(result.error ?? '买入失败');
+          return;
+        }
+
+        setMessage('买入成功');
+        await refresh();
+      },
     });
-
-    if (!result.ok) {
-      setMessage(result.error ?? '买入失败');
-      return;
-    }
-
-    setMessage('买入成功');
-    await refresh();
   };
 
-  const submitSell = async (event: FormEvent) => {
+  const submitSell = (event: FormEvent) => {
     event.preventDefault();
 
     if (!sellParticipants.length) {
@@ -187,19 +207,33 @@ export const App = () => {
       return;
     }
 
-    const result = await window.desktopApi.executeSell({
-      transTime: nowIsoLocal(),
-      price: sellPrice,
-      participants: sellParticipants,
+    const lines = [
+      `卖出价格：${sellPrice}`,
+      ...sellParticipants.map((p) => {
+        const m = activeMembers.find((member) => member.id === p.memberId);
+        return `${m?.name ?? p.memberId}：${p.shares} 股`;
+      }),
+    ];
+
+    setConfirmDialog({
+      title: '确认卖出',
+      lines,
+      onConfirm: async () => {
+        const result = await window.desktopApi.executeSell({
+          transTime: nowIsoLocal(),
+          price: sellPrice,
+          participants: sellParticipants,
+        });
+
+        if (!result.ok) {
+          setMessage(result.error ?? '卖出失败');
+          return;
+        }
+
+        setMessage('卖出成功');
+        await refresh();
+      },
     });
-
-    if (!result.ok) {
-      setMessage(result.error ?? '卖出失败');
-      return;
-    }
-
-    setMessage('卖出成功');
-    await refresh();
   };
 
   const submitDividend = async (event: FormEvent) => {
@@ -319,10 +353,10 @@ export const App = () => {
           {newMemberImmediateBuy && (
             <>
               <label className="field">
-                <span className="field-title">立即买入金额</span>
+                <span className="field-title">立即买入股数</span>
                 <input
-                  value={newMemberBuyAmount}
-                  onChange={(event) => setNewMemberBuyAmount(event.target.value)}
+                  value={newMemberBuyShares}
+                  onChange={(event) => setNewMemberBuyShares(event.target.value)}
                   required
                 />
               </label>
@@ -371,10 +405,10 @@ export const App = () => {
                 </select>
               </label>
               <label className="field">
-                <span className="field-title">投入金额</span>
+                <span className="field-title">买入股数</span>
                 <input
-                  value={participant.amount}
-                  onChange={(event) => updateBuyParticipant(index, { amount: event.target.value })}
+                  value={participant.shares}
+                  onChange={(event) => updateBuyParticipant(index, { shares: event.target.value })}
                   required
                 />
               </label>
@@ -637,6 +671,37 @@ export const App = () => {
           </div>
         )}
       </section>
+      {confirmDialog && (
+        <div className="dialog-overlay">
+          <div className="dialog">
+            <h3>{confirmDialog.title}</h3>
+            <ul className="dialog-list">
+              {confirmDialog.lines.map((line, i) => (
+                <li key={i}>{line}</li>
+              ))}
+            </ul>
+            <div className="dialog-actions">
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => setConfirmDialog(null)}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  const action = confirmDialog.onConfirm;
+                  setConfirmDialog(null);
+                  await action();
+                }}
+              >
+                确认
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

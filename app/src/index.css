@@ -133,3 +133,52 @@ td {
   padding: 8px 6px;
   font-size: 13px;
 }
+
+.dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.dialog {
+  background: #ffffff;
+  border-radius: 12px;
+  padding: 24px 28px;
+  min-width: 320px;
+  max-width: 480px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+}
+
+.dialog h3 {
+  margin: 0 0 14px;
+  font-size: 17px;
+  color: #1f2937;
+}
+
+.dialog-list {
+  margin: 0 0 20px;
+  padding-left: 20px;
+  color: #374151;
+  font-size: 14px;
+  line-height: 1.8;
+}
+
+.dialog-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.secondary {
+  background: #e2e8f0;
+  color: #1f2937;
+  border: none;
+}
+
+.secondary:hover {
+  background: #cbd5e1;
+}

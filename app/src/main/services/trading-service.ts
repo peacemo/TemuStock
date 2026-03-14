@@ -49,6 +49,39 @@ const nowIso = (): string => new Date().toISOString();
 
 const id = (): string => crypto.randomUUID();
 
+const allocateRoundedByWeights = (
+  total: DecimalJs,
+  weights: DecimalJs[],
+  rounder: (value: DecimalJs.Value) => DecimalJs,
+): DecimalJs[] => {
+  if (!weights.length) {
+    return [];
+  }
+
+  const totalWeight = weights.reduce((acc, weight) => acc.plus(weight), D(0));
+  if (totalWeight.equals(0)) {
+    return weights.map(() => D(0));
+  }
+
+  const allocations: DecimalJs[] = [];
+  let remainingTotal = D(total);
+  let remainingWeight = totalWeight;
+
+  weights.forEach((weight, index) => {
+    if (index === weights.length - 1) {
+      allocations.push(rounder(remainingTotal));
+      return;
+    }
+
+    const value = rounder(remainingTotal.times(weight).div(remainingWeight));
+    allocations.push(value);
+    remainingTotal = remainingTotal.minus(value);
+    remainingWeight = remainingWeight.minus(weight);
+  });
+
+  return allocations;
+};
+
 const ledgerToSnapshot = (row: LedgerRow): LedgerSnapshot => ({
   memberId: row.member_id,
   asOfTime: row.as_of_time,
@@ -552,13 +585,13 @@ export const createMember = (request: CreateMemberRequest): MemberWithLedger => 
 
   tx();
 
-  if (request.immediateBuyAmount && request.immediateBuyPrice) {
+  if (request.immediateBuyShares && request.immediateBuyPrice) {
     executeBuy({
       transTime: joinDate,
       price: request.immediateBuyPrice,
       participants: [{
         memberId,
-        amount: request.immediateBuyAmount,
+        shares: request.immediateBuyShares,
       }],
     });
   }
@@ -578,26 +611,23 @@ export const createMember = (request: CreateMemberRequest): MemberWithLedger => 
 const validateBuyParticipants = (
   db: Database,
   participants: BuyParticipantInput[],
-): Array<{ memberId: string; amount: ReturnType<typeof D>; ledger: LedgerRow }> => {
+): Array<{ memberId: string; shares: ReturnType<typeof D>; ledger: LedgerRow }> => {
   if (!participants.length) {
     throw new Error('买入参与人不能为空');
   }
 
   const mapped = participants.map((participant) => {
     ensureMemberExists(db, participant.memberId);
-    const amount = roundAmount(participant.amount);
-    if (!isPositive(amount)) {
-      throw new Error('买入金额必须大于 0');
+    const shares = roundShares(participant.shares);
+    if (!isPositive(shares)) {
+      throw new Error('买入股数必须大于 0');
     }
 
     const ledger = getLatestLedgerByMember(db, participant.memberId);
-    if (D(ledger.cash).lessThan(amount)) {
-      throw new Error(`成员 ${participant.memberId} 现金不足`);
-    }
 
     return {
       memberId: participant.memberId,
-      amount,
+      shares,
       ledger,
     };
   });
@@ -618,13 +648,14 @@ export const executeBuy = (request: BuyRequest): void => {
   const tx = db.transaction(() => {
     const participants = validateBuyParticipants(db, request.participants);
 
-    const totalInput = participants.reduce((acc, participant) => acc.plus(participant.amount), D(0));
-    const commissionRaw = totalInput
-      .div(D(1).plus(TRADING_CONFIG.commissionRate))
-      .times(TRADING_CONFIG.commissionRate);
-    const commissionActual = DecimalJs.max(commissionRaw, D(TRADING_CONFIG.minCommission));
-    const totalDealAmount = roundAmount(totalInput.minus(commissionActual));
-    const totalShares = roundShares(totalDealAmount.div(price));
+    const grossAmounts = participants.map((participant) => roundAmount(participant.shares.times(price)));
+    const totalShares = roundShares(
+      participants.reduce((acc, participant) => acc.plus(participant.shares), D(0)),
+    );
+    const totalDealAmount = roundAmount(grossAmounts.reduce((acc, amount) => acc.plus(amount), D(0)));
+    const commissionRaw = roundAmount(totalDealAmount.times(TRADING_CONFIG.commissionRate));
+    const commissionActual = roundAmount(DecimalJs.max(commissionRaw, D(TRADING_CONFIG.minCommission)));
+    const commissions = allocateRoundedByWeights(commissionActual, grossAmounts, roundAmount);
 
     db.prepare(
       `
@@ -639,23 +670,26 @@ export const executeBuy = (request: BuyRequest): void => {
       price.toString(),
       totalShares.toString(),
       totalDealAmount.toString(),
-      roundAmount(commissionActual).toString(),
+      commissionActual.toString(),
     );
 
-    participants.forEach((participant) => {
-      const ratio = participant.amount.div(totalInput);
-      const commission = roundAmount(commissionActual.times(ratio));
-      const dealAmount = roundAmount(participant.amount.minus(commission));
-      const deltaShares = roundShares(dealAmount.div(price));
+    participants.forEach((participant, index) => {
+      const dealAmount = grossAmounts[index];
+      const commission = commissions[index];
+      const cashRequired = roundAmount(dealAmount.plus(commission));
+
+      if (D(participant.ledger.cash).lessThan(cashRequired)) {
+        throw new Error(`成员 ${participant.memberId} 现金不足`);
+      }
 
       const previousShares = D(participant.ledger.shares);
       const previousCost = D(participant.ledger.cost);
       const previousCash = D(participant.ledger.cash);
       const previousProfit = D(participant.ledger.realized_profit);
 
-      const nextShares = roundShares(previousShares.plus(deltaShares));
+      const nextShares = roundShares(previousShares.plus(participant.shares));
       const nextCost = roundAmount(previousCost.plus(dealAmount));
-      const nextCash = roundAmount(previousCash.minus(participant.amount));
+      const nextCash = roundAmount(previousCash.minus(cashRequired));
       const avgPrice = nextShares.greaterThan(0)
         ? roundAvgPrice(nextCost.div(nextShares))
         : D(0);
@@ -671,10 +705,10 @@ export const executeBuy = (request: BuyRequest): void => {
         id(),
         transId,
         participant.memberId,
-        deltaShares.toString(),
+        participant.shares.toString(),
         dealAmount.toString(),
         commission.toString(),
-        roundAmount(D(0).minus(participant.amount)).toString(),
+        roundAmount(D(0).minus(cashRequired)).toString(),
         dealAmount.toString(),
       );
 
@@ -740,10 +774,13 @@ export const executeSell = (request: SellRequest): void => {
     const totalShares = roundShares(
       participants.reduce((acc, participant) => acc.plus(participant.shares), D(0)),
     );
-    const totalSellAmount = roundAmount(totalShares.times(price));
-    const commissionRaw = totalSellAmount.times(TRADING_CONFIG.commissionRate);
-    const commissionActual = DecimalJs.max(commissionRaw, D(TRADING_CONFIG.minCommission));
+    const grossAmounts = participants.map((participant) => roundAmount(participant.shares.times(price)));
+    const totalSellAmount = roundAmount(grossAmounts.reduce((acc, amount) => acc.plus(amount), D(0)));
+    const commissionRaw = roundAmount(totalSellAmount.times(TRADING_CONFIG.commissionRate));
+    const commissionActual = roundAmount(DecimalJs.max(commissionRaw, D(TRADING_CONFIG.minCommission)));
     const totalTax = roundAmount(totalSellAmount.times(TRADING_CONFIG.stampTaxRate));
+    const commissions = allocateRoundedByWeights(commissionActual, grossAmounts, roundAmount);
+    const taxes = allocateRoundedByWeights(totalTax, grossAmounts, roundAmount);
 
     db.prepare(
       `
@@ -758,15 +795,14 @@ export const executeSell = (request: SellRequest): void => {
       price.toString(),
       totalShares.toString(),
       totalSellAmount.toString(),
-      roundAmount(commissionActual).toString(),
+      commissionActual.toString(),
       totalTax.toString(),
     );
 
-    participants.forEach((participant) => {
-      const gross = roundAmount(participant.shares.times(price));
-      const ratio = totalSellAmount.greaterThan(0) ? gross.div(totalSellAmount) : D(0);
-      const commission = roundAmount(commissionActual.times(ratio));
-      const tax = roundAmount(gross.times(TRADING_CONFIG.stampTaxRate));
+    participants.forEach((participant, index) => {
+      const gross = grossAmounts[index];
+      const commission = commissions[index];
+      const tax = taxes[index];
       const netCash = roundAmount(gross.minus(commission).minus(tax));
 
       const prevShares = D(participant.ledger.shares);
@@ -775,7 +811,9 @@ export const executeSell = (request: SellRequest): void => {
       const prevAvg = D(participant.ledger.avg_price);
       const prevProfit = D(participant.ledger.realized_profit);
 
-      const soldCost = roundAmount(participant.shares.times(prevAvg));
+      const soldCost = prevShares.equals(participant.shares)
+        ? roundAmount(prevCost)
+        : roundAmount(participant.shares.times(prevAvg));
       const realizedProfit = roundAmount(netCash.minus(soldCost));
 
       const nextShares = roundShares(prevShares.minus(participant.shares));
