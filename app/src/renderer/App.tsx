@@ -291,18 +291,22 @@ export const App = () => {
       <section className="card">
         <h2>新增成员</h2>
         <form className="form" onSubmit={createMember}>
-          <input
-            placeholder="成员名称"
-            value={newMemberName}
-            onChange={(event) => setNewMemberName(event.target.value)}
-            required
-          />
-          <input
-            placeholder="初始资金"
-            value={newMemberCash}
-            onChange={(event) => setNewMemberCash(event.target.value)}
-            required
-          />
+          <label className="field">
+            <span className="field-title">成员名称</span>
+            <input
+              value={newMemberName}
+              onChange={(event) => setNewMemberName(event.target.value)}
+              required
+            />
+          </label>
+          <label className="field">
+            <span className="field-title">初始资金</span>
+            <input
+              value={newMemberCash}
+              onChange={(event) => setNewMemberCash(event.target.value)}
+              required
+            />
+          </label>
           <label className="checkline">
             <input
               type="checkbox"
@@ -314,18 +318,22 @@ export const App = () => {
 
           {newMemberImmediateBuy && (
             <>
-              <input
-                placeholder="立即买入金额"
-                value={newMemberBuyAmount}
-                onChange={(event) => setNewMemberBuyAmount(event.target.value)}
-                required
-              />
-              <input
-                placeholder="立即买入价格"
-                value={newMemberBuyPrice}
-                onChange={(event) => setNewMemberBuyPrice(event.target.value)}
-                required
-              />
+              <label className="field">
+                <span className="field-title">立即买入金额</span>
+                <input
+                  value={newMemberBuyAmount}
+                  onChange={(event) => setNewMemberBuyAmount(event.target.value)}
+                  required
+                />
+              </label>
+              <label className="field">
+                <span className="field-title">立即买入价格</span>
+                <input
+                  value={newMemberBuyPrice}
+                  onChange={(event) => setNewMemberBuyPrice(event.target.value)}
+                  required
+                />
+              </label>
             </>
           )}
           <button type="submit">创建成员</button>
@@ -335,34 +343,41 @@ export const App = () => {
       <section className="card">
         <h2>买入</h2>
         <form className="form" onSubmit={submitBuy}>
-          <input
-            placeholder="价格"
-            value={buyPrice}
-            onChange={(event) => setBuyPrice(event.target.value)}
-            required
-          />
+          <label className="field">
+            <span className="field-title">买入价格</span>
+            <input
+              value={buyPrice}
+              onChange={(event) => setBuyPrice(event.target.value)}
+              required
+            />
+          </label>
           <button type="button" onClick={addBuyParticipant}>添加参与人</button>
           <button type="submit">提交多人买入</button>
           <div className="spacer" />
 
           {buyParticipants.map((participant, index) => (
             <div className="participant-row" key={`buy-${index}`}>
-              <select
-                value={participant.memberId}
-                onChange={(event) => updateBuyParticipant(index, { memberId: event.target.value })}
-              >
-                {activeMembers.map((member) => (
-                  <option key={member.id} value={member.id}>
-                    {member.name}
-                  </option>
-                ))}
-              </select>
-              <input
-                placeholder="投入金额"
-                value={participant.amount}
-                onChange={(event) => updateBuyParticipant(index, { amount: event.target.value })}
-                required
-              />
+              <label className="field">
+                <span className="field-title">成员</span>
+                <select
+                  value={participant.memberId}
+                  onChange={(event) => updateBuyParticipant(index, { memberId: event.target.value })}
+                >
+                  {activeMembers.map((member) => (
+                    <option key={member.id} value={member.id}>
+                      {member.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="field">
+                <span className="field-title">投入金额</span>
+                <input
+                  value={participant.amount}
+                  onChange={(event) => updateBuyParticipant(index, { amount: event.target.value })}
+                  required
+                />
+              </label>
               <button type="button" className="danger" onClick={() => removeBuyParticipant(index)}>
                 移除
               </button>
@@ -374,34 +389,41 @@ export const App = () => {
       <section className="card">
         <h2>卖出</h2>
         <form className="form" onSubmit={submitSell}>
-          <input
-            placeholder="价格"
-            value={sellPrice}
-            onChange={(event) => setSellPrice(event.target.value)}
-            required
-          />
+          <label className="field">
+            <span className="field-title">卖出价格</span>
+            <input
+              value={sellPrice}
+              onChange={(event) => setSellPrice(event.target.value)}
+              required
+            />
+          </label>
           <button type="button" onClick={addSellParticipant}>添加参与人</button>
           <button type="submit">提交多人卖出</button>
           <div className="spacer" />
 
           {sellParticipants.map((participant, index) => (
             <div className="participant-row" key={`sell-${index}`}>
-              <select
-                value={participant.memberId}
-                onChange={(event) => updateSellParticipant(index, { memberId: event.target.value })}
-              >
-                {activeMembers.map((member) => (
-                  <option key={member.id} value={member.id}>
-                    {member.name}
-                  </option>
-                ))}
-              </select>
-              <input
-                placeholder="卖出股数"
-                value={participant.shares}
-                onChange={(event) => updateSellParticipant(index, { shares: event.target.value })}
-                required
-              />
+              <label className="field">
+                <span className="field-title">成员</span>
+                <select
+                  value={participant.memberId}
+                  onChange={(event) => updateSellParticipant(index, { memberId: event.target.value })}
+                >
+                  {activeMembers.map((member) => (
+                    <option key={member.id} value={member.id}>
+                      {member.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="field">
+                <span className="field-title">卖出股数</span>
+                <input
+                  value={participant.shares}
+                  onChange={(event) => updateSellParticipant(index, { shares: event.target.value })}
+                  required
+                />
+              </label>
               <button type="button" className="danger" onClick={() => removeSellParticipant(index)}>
                 移除
               </button>
@@ -413,12 +435,14 @@ export const App = () => {
       <section className="card">
         <h2>分红</h2>
         <form className="form" onSubmit={submitDividend}>
-          <input
-            placeholder="每股分红"
-            value={dividendPerShare}
-            onChange={(event) => setDividendPerShare(event.target.value)}
-            required
-          />
+          <label className="field">
+            <span className="field-title">每股分红</span>
+            <input
+              value={dividendPerShare}
+              onChange={(event) => setDividendPerShare(event.target.value)}
+              required
+            />
+          </label>
           <button type="submit">执行分红</button>
         </form>
       </section>
@@ -518,12 +542,15 @@ export const App = () => {
       <section className="card">
         <h2>历史快照回溯</h2>
         <form className="form" onSubmit={queryHistoricalSnapshot}>
-          <input
-            type="datetime-local"
-            value={historyQueryTime}
-            onChange={(event) => setHistoryQueryTime(event.target.value)}
-            required
-          />
+          <label className="field">
+            <span className="field-title">查询时间</span>
+            <input
+              type="datetime-local"
+              value={historyQueryTime}
+              onChange={(event) => setHistoryQueryTime(event.target.value)}
+              required
+            />
+          </label>
           <button type="submit">查询时间点快照</button>
         </form>
 
@@ -563,12 +590,14 @@ export const App = () => {
       <section className="card">
         <h2>反向交易冲销</h2>
         <form className="form" onSubmit={submitReverseTransaction}>
-          <input
-            placeholder="交易ID（可从交易明细复制）"
-            value={reverseTransId}
-            onChange={(event) => setReverseTransId(event.target.value)}
-            required
-          />
+          <label className="field">
+            <span className="field-title">交易ID（可从交易明细复制）</span>
+            <input
+              value={reverseTransId}
+              onChange={(event) => setReverseTransId(event.target.value)}
+              required
+            />
+          </label>
           <button type="submit">执行冲销</button>
         </form>
       </section>
