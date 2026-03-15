@@ -5,20 +5,26 @@ import type {
   BuyRequest,
   CreateMemberRequest,
   DividendRequest,
+  ExitMemberRequest,
   HistoricalSnapshot,
   LedgerHistoryQuery,
   PublicAccountSnapshot,
   ReplayValidationResult,
   ReverseTransactionRequest,
   SellRequest,
+  StockBonusRequest,
   TransactionDetailRecord,
   TransactionRecord,
+  WithdrawCashRequest,
 } from '../../shared/types';
 import { IPC_CHANNELS } from './channels';
 import {
   createMember,
   executeBuy,
   executeDividend,
+  executeMemberExit,
+  executeStockBonus,
+  executeWithdrawCash,
   getHistoricalSnapshot,
   executeSell,
   getLatestPublicAccount,
@@ -74,6 +80,27 @@ export const registerIpcHandlers = (): void => {
   ipcMain.handle(IPC_CHANNELS.reverseTransaction, async (_event, payload: ReverseTransactionRequest) =>
     wrap(() => {
       reverseTransaction(payload);
+      return true;
+    }),
+  );
+
+  ipcMain.handle(IPC_CHANNELS.executeWithdrawCash, async (_event, payload: WithdrawCashRequest) =>
+    wrap(() => {
+      executeWithdrawCash(payload);
+      return true;
+    }),
+  );
+
+  ipcMain.handle(IPC_CHANNELS.executeStockBonus, async (_event, payload: StockBonusRequest) =>
+    wrap(() => {
+      executeStockBonus(payload);
+      return true;
+    }),
+  );
+
+  ipcMain.handle(IPC_CHANNELS.executeMemberExit, async (_event, payload: ExitMemberRequest) =>
+    wrap(() => {
+      executeMemberExit(payload);
       return true;
     }),
   );

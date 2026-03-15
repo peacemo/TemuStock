@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS transaction_details (
   net_cash TEXT NOT NULL,
   cost_adjust TEXT NOT NULL,
   realized_profit TEXT NOT NULL,
+  additional_deposit TEXT NOT NULL DEFAULT '0',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (trans_id) REFERENCES transactions(id),
   FOREIGN KEY (member_id) REFERENCES members(id)

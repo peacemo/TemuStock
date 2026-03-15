@@ -3,6 +3,7 @@ import type {
   BuyRequest,
   CreateMemberRequest,
   DividendRequest,
+  ExitMemberRequest,
   HistoricalSnapshot,
   LedgerHistoryQuery,
   MemberWithLedger,
@@ -10,8 +11,10 @@ import type {
   ReplayValidationResult,
   ReverseTransactionRequest,
   SellRequest,
+  StockBonusRequest,
   TransactionDetailRecord,
   TransactionRecord,
+  WithdrawCashRequest,
 } from '../shared/types';
 
 type DesktopApi = {
@@ -21,6 +24,9 @@ type DesktopApi = {
   executeSell: (payload: SellRequest) => Promise<ApiResult<boolean>>;
   executeDividend: (payload: DividendRequest) => Promise<ApiResult<boolean>>;
   reverseTransaction: (payload: ReverseTransactionRequest) => Promise<ApiResult<boolean>>;
+  executeWithdrawCash: (payload: WithdrawCashRequest) => Promise<ApiResult<boolean>>;
+  executeStockBonus: (payload: StockBonusRequest) => Promise<ApiResult<boolean>>;
+  executeMemberExit: (payload: ExitMemberRequest) => Promise<ApiResult<boolean>>;
   listTransactions: () => Promise<ApiResult<TransactionRecord[]>>;
   listTransactionDetails: () => Promise<ApiResult<TransactionDetailRecord[]>>;
   getPublicAccount: () => Promise<ApiResult<PublicAccountSnapshot | null>>;

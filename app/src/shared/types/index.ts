@@ -1,5 +1,5 @@
 export type MemberStatus = 'active' | 'exited';
-export type TransactionType = 'buy' | 'sell' | 'dividend' | 'reversal';
+export type TransactionType = 'buy' | 'sell' | 'dividend' | 'reversal' | 'withdrawal' | 'stock_bonus' | 'member_exit';
 
 export interface Member {
   id: string;
@@ -52,9 +52,6 @@ export interface DividendRequest {
 export interface CreateMemberRequest {
   name: string;
   joinDate: string;
-  initialCash: string;
-  immediateBuyShares?: string;
-  immediateBuyPrice?: string;
 }
 
 export interface PublicAccountSnapshot {
@@ -102,6 +99,23 @@ export interface HistoricalSnapshot {
 export interface ReverseTransactionRequest {
   transId: string;
   reverseTime: string;
+}
+
+export interface WithdrawCashRequest {
+  memberId: string;
+  amount: string;
+  transTime: string;
+}
+
+export interface StockBonusRequest {
+  bonusRatio: string;
+  transTime: string;
+}
+
+export interface ExitMemberRequest {
+  memberId: string;
+  exitPrice: string;
+  transTime: string;
 }
 
 export interface ReplayValidationFailure {

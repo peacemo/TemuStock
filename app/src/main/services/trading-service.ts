@@ -11,6 +11,7 @@ import type {
   BuyRequest,
   CreateMemberRequest,
   DividendRequest,
+  ExitMemberRequest,
   HistoricalSnapshot,
   LedgerHistoryQuery,
   LedgerSnapshot,
@@ -21,8 +22,11 @@ import type {
   ReverseTransactionRequest,
   SellParticipantInput,
   SellRequest,
+  StockBonusRequest,
   TransactionDetailRecord,
   TransactionRecord,
+  TransactionType,
+  WithdrawCashRequest,
 } from '../../shared/types';
 
 type LedgerRow = {
@@ -222,6 +226,37 @@ const validateConservation = (db: Database): void => {
   }
 };
 
+const calculateAndExecuteDeposit = (
+  db: Database,
+  memberId: string,
+  requiredAmount: DecimalJs,
+  asOfTime: string,
+  eventId: string,
+): DecimalJs => {
+  const ledger = getLatestLedgerByMember(db, memberId);
+  const currentCash = D(ledger.cash);
+
+  if (requiredAmount.lessThanOrEqualTo(currentCash)) {
+    return D(0);
+  }
+
+  const depositAmount = roundAmount(requiredAmount.minus(currentCash));
+  const newCash = roundAmount(currentCash.plus(depositAmount));
+
+  insertLedgerSnapshot(db, {
+    memberId,
+    asOfTime,
+    cash: newCash.toString(),
+    shares: ledger.shares,
+    cost: ledger.cost,
+    avgPrice: ledger.avg_price,
+    realizedProfit: ledger.realized_profit,
+    eventId,
+  });
+
+  return depositAmount;
+};
+
 const ensureMemberExists = (db: Database, memberId: string): MemberRow => {
   const member = db.prepare('SELECT id, name, join_date, status FROM members WHERE id = ?').get(memberId) as
     | MemberRow
@@ -296,8 +331,8 @@ export const listTransactions = (): TransactionRecord[] => {
     )
     .all() as Array<{
     id: string;
-        type: 'buy' | 'sell' | 'dividend' | 'reversal';
-    type: 'buy' | 'sell' | 'dividend';
+    trans_time: string;
+    type: TransactionType;
     price: string;
     total_shares: string;
     total_amount: string;
@@ -551,14 +586,8 @@ export const createMember = (request: CreateMemberRequest): MemberWithLedger => 
     throw new Error('成员名称不能为空');
   }
 
-  const initialCash = roundAmount(request.initialCash);
-  if (!isPositive(initialCash)) {
-    throw new Error('初始资金必须大于 0');
-  }
-
   const joinDate = request.joinDate || nowIso();
   const memberId = id();
-  const eventId = id();
 
   const tx = db.transaction(() => {
     db.prepare('INSERT INTO members(id, name, join_date, status) VALUES (?, ?, ?, ?)').run(
@@ -571,30 +600,19 @@ export const createMember = (request: CreateMemberRequest): MemberWithLedger => 
     insertLedgerSnapshot(db, {
       memberId,
       asOfTime: joinDate,
-      cash: initialCash.toString(),
+      cash: '0',
       shares: '0',
       cost: '0',
       avgPrice: '0',
       realizedProfit: '0',
-      eventId,
+      eventId: id(),
     });
 
-    insertAccountSnapshot(db, joinDate, eventId);
+    insertAccountSnapshot(db, joinDate, id());
     validateConservation(db);
   });
 
   tx();
-
-  if (request.immediateBuyShares && request.immediateBuyPrice) {
-    executeBuy({
-      transTime: joinDate,
-      price: request.immediateBuyPrice,
-      participants: [{
-        memberId,
-        shares: request.immediateBuyShares,
-      }],
-    });
-  }
 
   const member = ensureMemberExists(db, memberId);
   const ledger = getLatestLedgerByMember(db, memberId);
@@ -648,15 +666,36 @@ export const executeBuy = (request: BuyRequest): void => {
   const tx = db.transaction(() => {
     const participants = validateBuyParticipants(db, request.participants);
 
-    const grossAmounts = participants.map((participant) => roundAmount(participant.shares.times(price)));
-    const totalShares = roundShares(
-      participants.reduce((acc, participant) => acc.plus(participant.shares), D(0)),
-    );
-    const totalDealAmount = roundAmount(grossAmounts.reduce((acc, amount) => acc.plus(amount), D(0)));
-    const commissionRaw = roundAmount(totalDealAmount.times(TRADING_CONFIG.commissionRate));
-    const commissionActual = roundAmount(DecimalJs.max(commissionRaw, D(TRADING_CONFIG.minCommission)));
-    const commissions = allocateRoundedByWeights(commissionActual, grossAmounts, roundAmount);
+    // Step 1: 计算总股数和总原始金额
+    const totalShares = participants.reduce((acc, p) => acc.plus(p.shares), D(0));
+    const rawTotalAmount = totalShares.times(price);
 
+    // Step 2: 计算总佣金和总投入
+    // 佣金基于 (价格 * 股数) 计算
+    const commissionRaw = roundAmount(rawTotalAmount.times(TRADING_CONFIG.commissionRate));
+    const commissionActual = roundAmount(DecimalJs.max(commissionRaw, D(TRADING_CONFIG.minCommission)));
+    const totalInvest = roundAmount(rawTotalAmount.plus(commissionActual));
+
+    // Step 3: 按股数比例分摊总投入和佣金
+    const shareWeights = participants.map((p) => p.shares);
+    const individualInvests = allocateRoundedByWeights(totalInvest, shareWeights, roundAmount);
+    const individualCommissions = allocateRoundedByWeights(commissionActual, shareWeights, roundAmount);
+
+    // Step 4: 处理入金 (如果现金不足则自动补足)
+    const deposits: DecimalJs[] = [];
+    participants.forEach((participant, index) => {
+      const invest = individualInvests[index];
+      const deposit = calculateAndExecuteDeposit(db, participant.memberId, invest, transTime, transId);
+      deposits.push(deposit);
+    });
+
+    // 如果有入金，更新总现金快照
+    const totalDeposit = deposits.reduce((acc, d) => acc.plus(d), D(0));
+    if (totalDeposit.greaterThan(0)) {
+      insertAccountSnapshot(db, transTime, transId);
+    }
+
+    // Step 5: 记录交易主表
     db.prepare(
       `
       INSERT INTO transactions
@@ -669,59 +708,58 @@ export const executeBuy = (request: BuyRequest): void => {
       transTime,
       price.toString(),
       totalShares.toString(),
-      totalDealAmount.toString(),
+      totalInvest.toString(),
       commissionActual.toString(),
     );
 
+    // Step 6: 更新个人账本快照及详情
     participants.forEach((participant, index) => {
-      const dealAmount = grossAmounts[index];
-      const commission = commissions[index];
-      const cashRequired = roundAmount(dealAmount.plus(commission));
+      const investAmount = individualInvests[index];
+      const commission = individualCommissions[index];
+      const buyShares = participant.shares;
+      const actualBuyValue = roundAmount(investAmount.minus(commission));
 
-      if (D(participant.ledger.cash).lessThan(cashRequired)) {
-        throw new Error(`成员 ${participant.memberId} 现金不足`);
-      }
+      const ledger = getLatestLedgerByMember(db, participant.memberId);
+      const previousShares = D(ledger.shares);
+      const previousCost = D(ledger.cost);
+      const previousCash = D(ledger.cash);
 
-      const previousShares = D(participant.ledger.shares);
-      const previousCost = D(participant.ledger.cost);
-      const previousCash = D(participant.ledger.cash);
-      const previousProfit = D(participant.ledger.realized_profit);
-
-      const nextShares = roundShares(previousShares.plus(participant.shares));
-      const nextCost = roundAmount(previousCost.plus(dealAmount));
-      const nextCash = roundAmount(previousCash.minus(cashRequired));
+      const nextShares = roundShares(previousShares.plus(buyShares));
+      const nextCost = roundAmount(previousCost.plus(actualBuyValue));
+      const nextCash = roundAmount(previousCash.minus(investAmount));
       const avgPrice = nextShares.greaterThan(0)
         ? roundAvgPrice(nextCost.div(nextShares))
         : D(0);
 
+      insertLedgerSnapshot(db, {
+        memberId: participant.memberId,
+        asOfTime: transTime,
+        cash: nextCash.toDecimalPlaces(2).toString(),
+        shares: nextShares.toDecimalPlaces(3).toString(),
+        cost: nextCost.toDecimalPlaces(2).toString(),
+        avgPrice: avgPrice.toString(),
+        realizedProfit: ledger.realized_profit,
+        eventId: transId,
+      });
+
       db.prepare(
         `
         INSERT INTO transaction_details
-        (id, trans_id, member_id, shares, amount, commission, tax, net_cash, cost_adjust, realized_profit)
+        (id, trans_id, member_id, shares, amount, commission, tax, net_cash, cost_adjust, realized_profit, additional_deposit)
         VALUES
-        (?, ?, ?, ?, ?, ?, '0', ?, ?, '0')
+        (?, ?, ?, ?, ?, ?, '0', ?, ?, '0', ?)
         `,
       ).run(
         id(),
         transId,
         participant.memberId,
-        participant.shares.toString(),
-        dealAmount.toString(),
+        buyShares.toString(),
+        investAmount.toString(),
         commission.toString(),
-        roundAmount(D(0).minus(cashRequired)).toString(),
-        dealAmount.toString(),
+        `-${investAmount.toString()}`,
+        actualBuyValue.toString(),
+        deposits[index].toString(),
       );
-
-      insertLedgerSnapshot(db, {
-        memberId: participant.memberId,
-        asOfTime: transTime,
-        cash: nextCash.toString(),
-        shares: nextShares.toString(),
-        cost: nextCost.toString(),
-        avgPrice: avgPrice.toString(),
-        realizedProfit: previousProfit.toString(),
-        eventId: transId,
-      });
     });
 
     insertAccountSnapshot(db, transTime, transId);
@@ -1092,6 +1130,202 @@ export const reverseTransaction = (request: ReverseTransactionRequest): void => 
     db.prepare('UPDATE transactions SET status = ? WHERE id = ?').run('reversed', original.id);
     insertAccountSnapshot(db, reverseTime, reversalId);
     validateConservation(db);
+  });
+
+  tx();
+};
+
+export const executeWithdrawCash = (request: WithdrawCashRequest): void => {
+  const db = getDatabase();
+
+  const withdrawAmount = roundAmount(request.amount);
+  if (!isPositive(withdrawAmount)) {
+    throw new Error('提取金额必须大于 0');
+  }
+
+  const transTime = request.transTime;
+  const memberId = request.memberId;
+  const transId = id();
+
+  const tx = db.transaction(() => {
+    ensureMemberExists(db, memberId);
+    const ledger = getLatestLedgerByMember(db, memberId);
+    const currentCash = D(ledger.cash);
+
+    if (currentCash.lessThan(withdrawAmount)) {
+      throw new Error(`成员 ${memberId} 现金不足，可提取金额：${currentCash.toString()}`);
+    }
+
+    // 记录交易
+    db.prepare(
+      `
+      INSERT INTO transactions
+      (id, trans_time, type, price, total_shares, total_amount, total_commission, total_tax, status)
+      VALUES
+      (?, ?, 'withdrawal', '0', '0', ?, '0', '0', 'confirmed')
+      `,
+    ).run(transId, transTime, withdrawAmount.toString());
+
+    // 更新个人账本
+    const nextCash = roundAmount(currentCash.minus(withdrawAmount));
+
+    db.prepare(
+      `
+      INSERT INTO transaction_details
+      (id, trans_id, member_id, shares, amount, commission, tax, net_cash, cost_adjust, realized_profit, additional_deposit)
+      VALUES
+      (?, ?, ?, '0', ?, '0', '0', ?, '0', '0', '0')
+      `,
+    ).run(
+      id(),
+      transId,
+      memberId,
+      withdrawAmount.toString(),
+      roundAmount(D(0).minus(withdrawAmount)).toString(),
+    );
+
+    insertLedgerSnapshot(db, {
+      memberId,
+      asOfTime: transTime,
+      cash: nextCash.toString(),
+      shares: ledger.shares,
+      cost: ledger.cost,
+      avgPrice: ledger.avg_price,
+      realizedProfit: ledger.realized_profit,
+      eventId: transId,
+    });
+
+    insertAccountSnapshot(db, transTime, transId);
+    validateConservation(db);
+  });
+
+  tx();
+};
+
+export const executeStockBonus = (request: StockBonusRequest): void => {
+  const db = getDatabase();
+
+  const bonusRatio = roundShares(request.bonusRatio);
+  if (bonusRatio.lessThanOrEqualTo(0)) {
+    throw new Error('送转股比例必须大于 0');
+  }
+
+  const transTime = request.transTime;
+  const transId = id();
+
+  const tx = db.transaction(() => {
+    // 获取所有活跃成员
+    const members = db
+      .prepare('SELECT id FROM members WHERE status = ? ORDER BY join_date ASC')
+      .all('active') as Array<{ id: string }>;
+
+    if (!members.length) {
+      throw new Error('当前没有活跃成员，无法执行除权');
+    }
+
+    const memberLedgers = members.map((m) => ({
+      memberId: m.id,
+      ledger: getLatestLedgerByMember(db, m.id),
+    }));
+
+    // 计算总送股数
+    const totalShares = roundShares(
+      memberLedgers.reduce((acc, ml) => acc.plus(D(ml.ledger.shares)), D(0)),
+    );
+    const totalBonusShares = roundShares(totalShares.times(bonusRatio));
+
+    // 记录交易（复用price字段存储比例）
+    db.prepare(
+      `
+      INSERT INTO transactions
+      (id, trans_time, type, price, total_shares, total_amount, total_commission, total_tax, status)
+      VALUES
+      (?, ?, 'stock_bonus', ?, ?, '0', '0', '0', 'confirmed')
+      `,
+    ).run(
+      transId,
+      transTime,
+      bonusRatio.toString(),
+      totalBonusShares.toString(),
+    );
+
+    // 更新每个成员
+    memberLedgers.forEach(({ memberId, ledger }) => {
+      const currentShares = D(ledger.shares);
+      const currentCost = D(ledger.cost);
+      const bonusShares = roundShares(currentShares.times(bonusRatio));
+      const nextShares = roundShares(currentShares.plus(bonusShares));
+      const nextAvgPrice = nextShares.greaterThan(0)
+        ? roundAvgPrice(currentCost.div(nextShares))
+        : D(0);
+
+      db.prepare(
+        `
+        INSERT INTO transaction_details
+        (id, trans_id, member_id, shares, amount, commission, tax, net_cash, cost_adjust, realized_profit, additional_deposit)
+        VALUES
+        (?, ?, ?, ?, '0', '0', '0', '0', '0', '0', '0')
+        `,
+      ).run(id(), transId, memberId, bonusShares.toString());
+
+      insertLedgerSnapshot(db, {
+        memberId,
+        asOfTime: transTime,
+        cash: ledger.cash,
+        shares: nextShares.toString(),
+        cost: ledger.cost,
+        avgPrice: nextAvgPrice.toString(),
+        realizedProfit: ledger.realized_profit,
+        eventId: transId,
+      });
+    });
+
+    insertAccountSnapshot(db, transTime, transId);
+    validateConservation(db);
+  });
+
+  tx();
+};
+
+export const executeMemberExit = (request: ExitMemberRequest): void => {
+  const db = getDatabase();
+
+  const exitPrice = roundPrice(request.exitPrice);
+  if (!isPositive(exitPrice)) {
+    throw new Error('退出时的股价必须大于 0');
+  }
+
+  const memberId = request.memberId;
+  const exitTime = request.transTime;
+
+  ensureMemberExists(db, memberId);
+  const initialLedger = getLatestLedgerByMember(db, memberId);
+
+  // Step A: 卖出全部持股（如有持股）
+  if (D(initialLedger.shares).greaterThan(0)) {
+    executeSell({
+      transTime: exitTime,
+      price: exitPrice.toString(),
+      participants: [{
+        memberId,
+        shares: initialLedger.shares,
+      }],
+    });
+  }
+
+  // Step B: 提取全部现金
+  const afterSellLedger = getLatestLedgerByMember(db, memberId);
+  if (D(afterSellLedger.cash).greaterThan(0)) {
+    executeWithdrawCash({
+      memberId,
+      amount: afterSellLedger.cash,
+      transTime: exitTime,
+    });
+  }
+
+  // Step C: 标记成员退出
+  const tx = db.transaction(() => {
+    db.prepare('UPDATE members SET status = ? WHERE id = ?').run('exited', memberId);
   });
 
   tx();

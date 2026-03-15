@@ -21,13 +21,17 @@ export const App = () => {
   const [message, setMessage] = useState('就绪');
 
   const [newMemberName, setNewMemberName] = useState('');
-  const [newMemberCash, setNewMemberCash] = useState('10000');
-  const [newMemberImmediateBuy, setNewMemberImmediateBuy] = useState(false);
-  const [newMemberBuyShares, setNewMemberBuyShares] = useState('0');
-  const [newMemberBuyPrice, setNewMemberBuyPrice] = useState('10.000');
 
   const [buyPrice, setBuyPrice] = useState('10.000');
   const [buyParticipants, setBuyParticipants] = useState<BuyParticipantInput[]>([]);
+
+  const [withdrawMemberId, setWithdrawMemberId] = useState('');
+  const [withdrawAmount, setWithdrawAmount] = useState('0');
+
+  const [bonusRatio, setBonusRatio] = useState('1.0');
+
+  const [exitMemberId, setExitMemberId] = useState('');
+  const [exitPrice, setExitPrice] = useState('10.000');
 
   const [sellPrice, setSellPrice] = useState('10.000');
   const [sellParticipants, setSellParticipants] = useState<SellParticipantInput[]>([]);
@@ -104,6 +108,9 @@ export const App = () => {
       }
       return [{ memberId: activeMembers[0].id, shares: '10' }];
     });
+
+    setWithdrawMemberId((previous) => previous || activeMembers[0].id);
+    setExitMemberId((previous) => previous || activeMembers[0].id);
   }, [activeMembers]);
 
   const addBuyParticipant = () => {
@@ -145,9 +152,6 @@ export const App = () => {
     const result = await window.desktopApi.createMember({
       name: newMemberName,
       joinDate: nowIsoLocal(),
-      initialCash: newMemberCash,
-      immediateBuyShares: newMemberImmediateBuy ? newMemberBuyShares : undefined,
-      immediateBuyPrice: newMemberImmediateBuy ? newMemberBuyPrice : undefined,
     });
 
     if (!result.ok) {
@@ -156,8 +160,6 @@ export const App = () => {
     }
 
     setNewMemberName('');
-    setNewMemberImmediateBuy(false);
-    setNewMemberBuyShares('0');
     setMessage('成员创建成功');
     await refresh();
   };
@@ -194,6 +196,76 @@ export const App = () => {
         }
 
         setMessage('买入成功');
+        await refresh();
+      },
+    });
+  };
+
+  const submitWithdrawCash = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!withdrawMemberId || !withdrawAmount) return;
+
+    const m = activeMembers.find((member) => member.id === withdrawMemberId);
+    setConfirmDialog({
+      title: '确认提现',
+      lines: [`成员：${m?.name}`, `金额：${withdrawAmount}`],
+      onConfirm: async () => {
+        const result = await window.desktopApi.executeWithdrawCash({
+          transTime: nowIsoLocal(),
+          memberId: withdrawMemberId,
+          amount: withdrawAmount,
+        });
+        if (!result.ok) {
+          setMessage(result.error ?? '提现失败');
+          return;
+        }
+        setMessage('提现成功');
+        await refresh();
+      },
+    });
+  };
+
+  const submitStockBonus = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!bonusRatio) return;
+
+    setConfirmDialog({
+      title: '确认送股',
+      lines: [`比例：${bonusRatio}`],
+      onConfirm: async () => {
+        const result = await window.desktopApi.executeStockBonus({
+          transTime: nowIsoLocal(),
+          bonusRatio: bonusRatio,
+        });
+        if (!result.ok) {
+          setMessage(result.error ?? '送股失败');
+          return;
+        }
+        setMessage('送股成功');
+        await refresh();
+      },
+    });
+  };
+
+  const submitMemberExit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!exitMemberId || !exitPrice) return;
+
+    const m = activeMembers.find((member) => member.id === exitMemberId);
+    setConfirmDialog({
+      title: '确认成员退出',
+      lines: [`成员：${m?.name}`, `退出股价：${exitPrice}`],
+      onConfirm: async () => {
+        const result = await window.desktopApi.executeMemberExit({
+          transTime: nowIsoLocal(),
+          memberId: exitMemberId,
+          price: exitPrice,
+        });
+        if (!result.ok) {
+          setMessage(result.error ?? '成员退出失败');
+          return;
+        }
+        setMessage('成员退出成功');
         await refresh();
       },
     });
@@ -333,43 +405,6 @@ export const App = () => {
               required
             />
           </label>
-          <label className="field">
-            <span className="field-title">初始资金</span>
-            <input
-              value={newMemberCash}
-              onChange={(event) => setNewMemberCash(event.target.value)}
-              required
-            />
-          </label>
-          <label className="checkline">
-            <input
-              type="checkbox"
-              checked={newMemberImmediateBuy}
-              onChange={(event) => setNewMemberImmediateBuy(event.target.checked)}
-            />
-            加入后立即买入
-          </label>
-
-          {newMemberImmediateBuy && (
-            <>
-              <label className="field">
-                <span className="field-title">立即买入股数</span>
-                <input
-                  value={newMemberBuyShares}
-                  onChange={(event) => setNewMemberBuyShares(event.target.value)}
-                  required
-                />
-              </label>
-              <label className="field">
-                <span className="field-title">立即买入价格</span>
-                <input
-                  value={newMemberBuyPrice}
-                  onChange={(event) => setNewMemberBuyPrice(event.target.value)}
-                  required
-                />
-              </label>
-            </>
-          )}
           <button type="submit">创建成员</button>
         </form>
       </section>
@@ -417,6 +452,73 @@ export const App = () => {
               </button>
             </div>
           ))}
+        </form>
+      </section>
+
+      <section className="card">
+        <h2>提现 (Withdraw)</h2>
+        <form className="form" onSubmit={submitWithdrawCash}>
+          <label className="field">
+            <span className="field-title">成员</span>
+            <select
+              value={withdrawMemberId}
+              onChange={(e) => setWithdrawMemberId(e.target.value)}
+            >
+              {activeMembers.map((m) => (
+                <option key={m.id} value={m.id}>{m.name}</option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span className="field-title">提现金额</span>
+            <input
+              value={withdrawAmount}
+              onChange={(e) => setWithdrawAmount(e.target.value)}
+              required
+            />
+          </label>
+          <button type="submit">执行提现</button>
+        </form>
+      </section>
+
+      <section className="card">
+        <h2>送股 (Stock Bonus / Split)</h2>
+        <form className="form" onSubmit={submitStockBonus}>
+          <label className="field">
+            <span className="field-title">送股比例 (如 1.2 表示 10股变12股)</span>
+            <input
+              value={bonusRatio}
+              onChange={(e) => setBonusRatio(e.target.value)}
+              required
+            />
+          </label>
+          <button type="submit">执行送股</button>
+        </form>
+      </section>
+
+      <section className="card">
+        <h2>成员退出 (Liquidate)</h2>
+        <form className="form" onSubmit={submitMemberExit}>
+          <label className="field">
+            <span className="field-title">成员</span>
+            <select
+              value={exitMemberId}
+              onChange={(e) => setExitMemberId(e.target.value)}
+            >
+              {activeMembers.map((m) => (
+                <option key={m.id} value={m.id}>{m.name}</option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span className="field-title">退出时每股单价</span>
+            <input
+              value={exitPrice}
+              onChange={(e) => setExitPrice(e.target.value)}
+              required
+            />
+          </label>
+          <button type="submit">执行退出</button>
         </form>
       </section>
 
