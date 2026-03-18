@@ -90,3 +90,6 @@ typings/
 
 # Electron-Forge
 out/
+
+# icon cache
+assets/icons/generated/

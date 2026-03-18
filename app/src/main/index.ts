@@ -13,12 +13,23 @@ if (started) {
 
 app.setPath('userData', path.join(os.homedir(), '.config', 'temustock'));
 
+const getWindowIconPath = () => {
+  const iconRelativePath = path.join('assets', 'icons', 'generated', 'png', '512x512.png');
+
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, iconRelativePath);
+  }
+
+  return path.resolve(__dirname, '../../', iconRelativePath);
+};
+
 const createWindow = () => {
   const mainWindow = new BrowserWindow({
     width: 1200,
     height: 820,
     minWidth: 1000,
     minHeight: 700,
+    icon: process.platform === 'linux' ? getWindowIconPath() : undefined,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
