@@ -1,13 +1,17 @@
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, Menu } from 'electron';
 import path from 'node:path';
+import os from 'node:os';
 import started from 'electron-squirrel-startup';
 
 import { initializeDatabase } from './database';
 import { registerIpcHandlers } from './ipc/handlers';
+import { initializeSettlementLogger } from './logging/settlement-logger';
 
 if (started) {
   app.quit();
 }
+
+app.setPath('userData', path.join(os.homedir(), '.config', 'temustock'));
 
 const createWindow = () => {
   const mainWindow = new BrowserWindow({
@@ -32,7 +36,10 @@ const createWindow = () => {
 };
 
 app.on('ready', () => {
-  initializeDatabase(app.getPath('userData'));
+  Menu.setApplicationMenu(null);
+  const userDataPath = app.getPath('userData');
+  initializeSettlementLogger(userDataPath);
+  initializeDatabase(userDataPath);
   registerIpcHandlers();
   createWindow();
 });

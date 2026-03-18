@@ -21,6 +21,7 @@ export const App = () => {
   const [message, setMessage] = useState('就绪');
 
   const [newMemberName, setNewMemberName] = useState('');
+  const [newMemberInitialCash, setNewMemberInitialCash] = useState('0');
 
   const [buyPrice, setBuyPrice] = useState('10.000');
   const [buyParticipants, setBuyParticipants] = useState<BuyParticipantInput[]>([]);
@@ -152,6 +153,7 @@ export const App = () => {
     const result = await window.desktopApi.createMember({
       name: newMemberName,
       joinDate: nowIsoLocal(),
+      initialCash: newMemberInitialCash,
     });
 
     if (!result.ok) {
@@ -160,6 +162,7 @@ export const App = () => {
     }
 
     setNewMemberName('');
+    setNewMemberInitialCash('0');
     setMessage('成员创建成功');
     await refresh();
   };
@@ -259,7 +262,7 @@ export const App = () => {
         const result = await window.desktopApi.executeMemberExit({
           transTime: nowIsoLocal(),
           memberId: exitMemberId,
-          price: exitPrice,
+          exitPrice: exitPrice,
         });
         if (!result.ok) {
           setMessage(result.error ?? '成员退出失败');
@@ -405,6 +408,14 @@ export const App = () => {
               required
             />
           </label>
+          <label className="field">
+            <span className="field-title">初始注资金额</span>
+            <input
+              value={newMemberInitialCash}
+              onChange={(event) => setNewMemberInitialCash(event.target.value)}
+              required
+            />
+          </label>
           <button type="submit">创建成员</button>
         </form>
       </section>
@@ -485,7 +496,7 @@ export const App = () => {
         <h2>送股 (Stock Bonus / Split)</h2>
         <form className="form" onSubmit={submitStockBonus}>
           <label className="field">
-            <span className="field-title">送股比例 (如 1.2 表示 10股变12股)</span>
+            <span className="field-title">送股比例 s (每股送 s 股，如 10送2 填 0.2)</span>
             <input
               value={bonusRatio}
               onChange={(e) => setBonusRatio(e.target.value)}

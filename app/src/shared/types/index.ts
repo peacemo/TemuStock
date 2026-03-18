@@ -52,6 +52,7 @@ export interface DividendRequest {
 export interface CreateMemberRequest {
   name: string;
   joinDate: string;
+  initialCash: string;
 }
 
 export interface PublicAccountSnapshot {

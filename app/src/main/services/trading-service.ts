@@ -4,6 +4,7 @@ import type { Database } from 'better-sqlite3';
 import DecimalJs from 'decimal.js';
 
 import { getDatabase } from '../database';
+import { logSettlement } from '../logging/settlement-logger';
 import { TRADING_CONFIG } from '../../shared/constants/trading';
 import { D, isPositive, roundAmount, roundAvgPrice, roundPrice, roundShares } from '../../shared/utils/decimal';
 import type {
@@ -405,12 +406,21 @@ export const validateReplayConsistency = (): ReplayValidationResult => {
     }
   });
 
-  return {
+  const result = {
     ok: failures.length === 0,
     checkedSnapshots: snapshots.length,
     failedSnapshots: failures.length,
     failures,
   };
+
+  logSettlement('account.validateReplay', {
+    checkedSnapshots: result.checkedSnapshots,
+    failedSnapshots: result.failedSnapshots,
+    ok: result.ok,
+    failures: result.failures,
+  });
+
+  return result;
 };
 
 export const listTransactionDetails = (): TransactionDetailRecord[] => {
@@ -568,7 +578,7 @@ export const getHistoricalSnapshot = (query: LedgerHistoryQuery): HistoricalSnap
     },
   }));
 
-  return {
+  const result = {
     asOfTime: accountRow.as_of_time,
     publicAccount: {
       asOfTime: accountRow.as_of_time,
@@ -577,6 +587,16 @@ export const getHistoricalSnapshot = (query: LedgerHistoryQuery): HistoricalSnap
     },
     members,
   };
+
+  logSettlement('account.getHistoricalSnapshot', {
+    requestedAsOfTime: asOfTime,
+    resolvedAsOfTime: result.asOfTime,
+    memberCount: result.members.length,
+    totalCash: result.publicAccount.totalCash,
+    totalShares: result.publicAccount.totalShares,
+  });
+
+  return result;
 };
 
 export const createMember = (request: CreateMemberRequest): MemberWithLedger => {
@@ -586,8 +606,14 @@ export const createMember = (request: CreateMemberRequest): MemberWithLedger => 
     throw new Error('成员名称不能为空');
   }
 
+  const initialCash = roundAmount(request.initialCash);
+  if (initialCash.lessThan(0)) {
+    throw new Error('新成员注资金额不能小于 0');
+  }
+
   const joinDate = request.joinDate || nowIso();
   const memberId = id();
+  let accountSnapshot: PublicAccountSnapshot | null = null;
 
   const tx = db.transaction(() => {
     db.prepare('INSERT INTO members(id, name, join_date, status) VALUES (?, ?, ?, ?)').run(
@@ -600,7 +626,7 @@ export const createMember = (request: CreateMemberRequest): MemberWithLedger => 
     insertLedgerSnapshot(db, {
       memberId,
       asOfTime: joinDate,
-      cash: '0',
+      cash: initialCash.toString(),
       shares: '0',
       cost: '0',
       avgPrice: '0',
@@ -608,7 +634,7 @@ export const createMember = (request: CreateMemberRequest): MemberWithLedger => 
       eventId: id(),
     });
 
-    insertAccountSnapshot(db, joinDate, id());
+    accountSnapshot = insertAccountSnapshot(db, joinDate, id());
     validateConservation(db);
   });
 
@@ -617,13 +643,24 @@ export const createMember = (request: CreateMemberRequest): MemberWithLedger => 
   const member = ensureMemberExists(db, memberId);
   const ledger = getLatestLedgerByMember(db, memberId);
 
-  return {
+  const result = {
     id: member.id,
     name: member.name,
     joinDate: member.join_date,
     status: member.status,
     ledger: ledgerToSnapshot(ledger),
   };
+
+  logSettlement('member.create', {
+    memberId: result.id,
+    memberName: result.name,
+    joinDate: result.joinDate,
+    initialCash: initialCash.toString(),
+    ledger: result.ledger,
+    publicAccount: accountSnapshot,
+  });
+
+  return result;
 };
 
 const validateBuyParticipants = (
@@ -662,19 +699,25 @@ export const executeBuy = (request: BuyRequest): void => {
 
   const transTime = request.transTime || nowIso();
   const transId = id();
+  const participantLogs: Array<Record<string, string>> = [];
+  let totalDeposit = D(0);
+  let totalShares = D(0);
+  let totalInvest = D(0);
+  let commissionActual = D(0);
+  let accountSnapshot: PublicAccountSnapshot | null = null;
 
   const tx = db.transaction(() => {
     const participants = validateBuyParticipants(db, request.participants);
 
     // Step 1: 计算总股数和总原始金额
-    const totalShares = participants.reduce((acc, p) => acc.plus(p.shares), D(0));
+    totalShares = participants.reduce((acc, p) => acc.plus(p.shares), D(0));
     const rawTotalAmount = totalShares.times(price);
 
     // Step 2: 计算总佣金和总投入
     // 佣金基于 (价格 * 股数) 计算
     const commissionRaw = roundAmount(rawTotalAmount.times(TRADING_CONFIG.commissionRate));
-    const commissionActual = roundAmount(DecimalJs.max(commissionRaw, D(TRADING_CONFIG.minCommission)));
-    const totalInvest = roundAmount(rawTotalAmount.plus(commissionActual));
+    commissionActual = roundAmount(DecimalJs.max(commissionRaw, D(TRADING_CONFIG.minCommission)));
+    totalInvest = roundAmount(rawTotalAmount.plus(commissionActual));
 
     // Step 3: 按股数比例分摊总投入和佣金
     const shareWeights = participants.map((p) => p.shares);
@@ -690,7 +733,7 @@ export const executeBuy = (request: BuyRequest): void => {
     });
 
     // 如果有入金，更新总现金快照
-    const totalDeposit = deposits.reduce((acc, d) => acc.plus(d), D(0));
+    totalDeposit = deposits.reduce((acc, d) => acc.plus(d), D(0));
     if (totalDeposit.greaterThan(0)) {
       insertAccountSnapshot(db, transTime, transId);
     }
@@ -731,6 +774,22 @@ export const executeBuy = (request: BuyRequest): void => {
         ? roundAvgPrice(nextCost.div(nextShares))
         : D(0);
 
+      participantLogs.push({
+        memberId: participant.memberId,
+        shares: buyShares.toString(),
+        investAmount: investAmount.toString(),
+        commission: commission.toString(),
+        actualBuyValue: actualBuyValue.toString(),
+        deposit: deposits[index].toString(),
+        previousCash: previousCash.toString(),
+        previousShares: previousShares.toString(),
+        previousCost: previousCost.toString(),
+        nextCash: nextCash.toString(),
+        nextShares: nextShares.toString(),
+        nextCost: nextCost.toString(),
+        nextAvgPrice: avgPrice.toString(),
+      });
+
       insertLedgerSnapshot(db, {
         memberId: participant.memberId,
         asOfTime: transTime,
@@ -762,11 +821,24 @@ export const executeBuy = (request: BuyRequest): void => {
       );
     });
 
-    insertAccountSnapshot(db, transTime, transId);
+    accountSnapshot = insertAccountSnapshot(db, transTime, transId);
     validateConservation(db);
   });
 
   tx();
+
+  logSettlement('transaction.buy', {
+    transId,
+    transTime,
+    price: price.toString(),
+    totalShares: totalShares.toString(),
+    totalInvest: totalInvest.toString(),
+    totalCommission: commissionActual.toString(),
+    totalDeposit: totalDeposit.toString(),
+    participantCount: participantLogs.length,
+    participants: participantLogs,
+    publicAccount: accountSnapshot,
+  });
 };
 
 const validateSellParticipants = (
@@ -806,17 +878,23 @@ export const executeSell = (request: SellRequest): void => {
 
   const transTime = request.transTime || nowIso();
   const transId = id();
+  const participantLogs: Array<Record<string, string>> = [];
+  let totalShares = D(0);
+  let totalSellAmount = D(0);
+  let totalTax = D(0);
+  let commissionActual = D(0);
+  let accountSnapshot: PublicAccountSnapshot | null = null;
 
   const tx = db.transaction(() => {
     const participants = validateSellParticipants(db, request.participants);
-    const totalShares = roundShares(
+    totalShares = roundShares(
       participants.reduce((acc, participant) => acc.plus(participant.shares), D(0)),
     );
     const grossAmounts = participants.map((participant) => roundAmount(participant.shares.times(price)));
-    const totalSellAmount = roundAmount(grossAmounts.reduce((acc, amount) => acc.plus(amount), D(0)));
+    totalSellAmount = roundAmount(grossAmounts.reduce((acc, amount) => acc.plus(amount), D(0)));
     const commissionRaw = roundAmount(totalSellAmount.times(TRADING_CONFIG.commissionRate));
-    const commissionActual = roundAmount(DecimalJs.max(commissionRaw, D(TRADING_CONFIG.minCommission)));
-    const totalTax = roundAmount(totalSellAmount.times(TRADING_CONFIG.stampTaxRate));
+    commissionActual = roundAmount(DecimalJs.max(commissionRaw, D(TRADING_CONFIG.minCommission)));
+    totalTax = roundAmount(totalSellAmount.times(TRADING_CONFIG.stampTaxRate));
     const commissions = allocateRoundedByWeights(commissionActual, grossAmounts, roundAmount);
     const taxes = allocateRoundedByWeights(totalTax, grossAmounts, roundAmount);
 
@@ -860,9 +938,29 @@ export const executeSell = (request: SellRequest): void => {
         ? D(0)
         : roundAmount(prevCost.minus(soldCost));
       const nextAvg = nextShares.greaterThan(0)
-        ? roundAvgPrice(nextCost.div(nextShares))
+        ? prevAvg
         : D(0);
       const nextRealizedProfit = roundAmount(prevProfit.plus(realizedProfit));
+
+      participantLogs.push({
+        memberId: participant.memberId,
+        shares: participant.shares.toString(),
+        grossAmount: gross.toString(),
+        commission: commission.toString(),
+        tax: tax.toString(),
+        netCash: netCash.toString(),
+        soldCost: soldCost.toString(),
+        realizedProfit: realizedProfit.toString(),
+        previousCash: prevCash.toString(),
+        previousShares: prevShares.toString(),
+        previousCost: prevCost.toString(),
+        previousAvgPrice: prevAvg.toString(),
+        nextCash: nextCash.toString(),
+        nextShares: nextShares.toString(),
+        nextCost: nextCost.toString(),
+        nextAvgPrice: nextAvg.toString(),
+        nextRealizedProfit: nextRealizedProfit.toString(),
+      });
 
       db.prepare(
         `
@@ -896,11 +994,24 @@ export const executeSell = (request: SellRequest): void => {
       });
     });
 
-    insertAccountSnapshot(db, transTime, transId);
+    accountSnapshot = insertAccountSnapshot(db, transTime, transId);
     validateConservation(db);
   });
 
   tx();
+
+  logSettlement('transaction.sell', {
+    transId,
+    transTime,
+    price: price.toString(),
+    totalShares: totalShares.toString(),
+    totalAmount: totalSellAmount.toString(),
+    totalCommission: commissionActual.toString(),
+    totalTax: totalTax.toString(),
+    participantCount: participantLogs.length,
+    participants: participantLogs,
+    publicAccount: accountSnapshot,
+  });
 };
 
 export const executeDividend = (request: DividendRequest): void => {
@@ -912,6 +1023,10 @@ export const executeDividend = (request: DividendRequest): void => {
 
   const transTime = request.transTime || nowIso();
   const transId = id();
+  const participantLogs: Array<Record<string, string>> = [];
+  let totalShares = D(0);
+  let totalDividend = D(0);
+  let accountSnapshot: PublicAccountSnapshot | null = null;
 
   const tx = db.transaction(() => {
     const members = db
@@ -927,10 +1042,10 @@ export const executeDividend = (request: DividendRequest): void => {
       ledger: getLatestLedgerByMember(db, member.id),
     }));
 
-    const totalShares = roundShares(
+    totalShares = roundShares(
       latest.reduce((acc, row) => acc.plus(D(row.ledger.shares)), D(0)),
     );
-    const totalDividend = roundAmount(totalShares.times(perShare));
+    totalDividend = roundAmount(totalShares.times(perShare));
 
     db.prepare(
       `
@@ -951,6 +1066,14 @@ export const executeDividend = (request: DividendRequest): void => {
       const memberShares = D(ledger.shares);
       const amount = roundAmount(memberShares.times(perShare));
       const nextCash = roundAmount(D(ledger.cash).plus(amount));
+
+      participantLogs.push({
+        memberId,
+        shares: memberShares.toString(),
+        dividendAmount: amount.toString(),
+        previousCash: ledger.cash,
+        nextCash: nextCash.toString(),
+      });
 
       db.prepare(
         `
@@ -973,16 +1096,31 @@ export const executeDividend = (request: DividendRequest): void => {
       });
     });
 
-    insertAccountSnapshot(db, transTime, transId);
+    accountSnapshot = insertAccountSnapshot(db, transTime, transId);
     validateConservation(db);
   });
 
   tx();
+
+  logSettlement('transaction.dividend', {
+    transId,
+    transTime,
+    perShareDividend: perShare.toString(),
+    totalShares: totalShares.toString(),
+    totalDividend: totalDividend.toString(),
+    participantCount: participantLogs.length,
+    participants: participantLogs,
+    publicAccount: accountSnapshot,
+  });
 };
 
 export const reverseTransaction = (request: ReverseTransactionRequest): void => {
   const db = getDatabase();
   const reverseTime = request.reverseTime || nowIso();
+  let reversalId = '';
+  let originalMeta: Record<string, string> | null = null;
+  const participantLogs: Array<Record<string, string>> = [];
+  let accountSnapshot: PublicAccountSnapshot | null = null;
 
   const tx = db.transaction(() => {
     const original = db
@@ -1046,7 +1184,15 @@ export const reverseTransaction = (request: ReverseTransactionRequest): void => 
       throw new Error('待冲销交易没有可用明细');
     }
 
-    const reversalId = id();
+    reversalId = id();
+    originalMeta = {
+      transId: original.id,
+      transTime: original.trans_time,
+      transType: original.type,
+      totalAmount: original.total_amount,
+      totalCommission: original.total_commission,
+      totalTax: original.total_tax,
+    };
 
     db.prepare(
       `
@@ -1095,6 +1241,22 @@ export const reverseTransaction = (request: ReverseTransactionRequest): void => 
         ? roundAvgPrice(nextCost.div(nextShares))
         : D(0);
 
+      participantLogs.push({
+        memberId: detail.member_id,
+        reverseShares: reverseShares.toString(),
+        reverseAmount: reverseAmount.toString(),
+        reverseCommission: reverseCommission.toString(),
+        reverseTax: reverseTax.toString(),
+        reverseNetCash: reverseNetCash.toString(),
+        reverseCostAdjust: reverseCostAdjust.toString(),
+        reverseRealizedProfit: reverseRealizedProfit.toString(),
+        nextCash: nextCash.toString(),
+        nextShares: nextShares.toString(),
+        nextCost: nextCost.toString(),
+        nextAvgPrice: nextAvgPrice.toString(),
+        nextRealizedProfit: nextRealizedProfit.toString(),
+      });
+
       db.prepare(
         `
         INSERT INTO transaction_details
@@ -1128,11 +1290,20 @@ export const reverseTransaction = (request: ReverseTransactionRequest): void => 
     });
 
     db.prepare('UPDATE transactions SET status = ? WHERE id = ?').run('reversed', original.id);
-    insertAccountSnapshot(db, reverseTime, reversalId);
+    accountSnapshot = insertAccountSnapshot(db, reverseTime, reversalId);
     validateConservation(db);
   });
 
   tx();
+
+  logSettlement('transaction.reversal', {
+    reversalId,
+    reverseTime,
+    original: originalMeta,
+    participantCount: participantLogs.length,
+    participants: participantLogs,
+    publicAccount: accountSnapshot,
+  });
 };
 
 export const executeWithdrawCash = (request: WithdrawCashRequest): void => {
@@ -1146,11 +1317,15 @@ export const executeWithdrawCash = (request: WithdrawCashRequest): void => {
   const transTime = request.transTime;
   const memberId = request.memberId;
   const transId = id();
+  let beforeCash = D(0);
+  let afterCash = D(0);
+  let accountSnapshot: PublicAccountSnapshot | null = null;
 
   const tx = db.transaction(() => {
     ensureMemberExists(db, memberId);
     const ledger = getLatestLedgerByMember(db, memberId);
     const currentCash = D(ledger.cash);
+    beforeCash = currentCash;
 
     if (currentCash.lessThan(withdrawAmount)) {
       throw new Error(`成员 ${memberId} 现金不足，可提取金额：${currentCash.toString()}`);
@@ -1168,6 +1343,7 @@ export const executeWithdrawCash = (request: WithdrawCashRequest): void => {
 
     // 更新个人账本
     const nextCash = roundAmount(currentCash.minus(withdrawAmount));
+    afterCash = nextCash;
 
     db.prepare(
       `
@@ -1195,11 +1371,21 @@ export const executeWithdrawCash = (request: WithdrawCashRequest): void => {
       eventId: transId,
     });
 
-    insertAccountSnapshot(db, transTime, transId);
+    accountSnapshot = insertAccountSnapshot(db, transTime, transId);
     validateConservation(db);
   });
 
   tx();
+
+  logSettlement('transaction.withdrawal', {
+    transId,
+    transTime,
+    memberId,
+    amount: withdrawAmount.toString(),
+    beforeCash: beforeCash.toString(),
+    afterCash: afterCash.toString(),
+    publicAccount: accountSnapshot,
+  });
 };
 
 export const executeStockBonus = (request: StockBonusRequest): void => {
@@ -1212,6 +1398,10 @@ export const executeStockBonus = (request: StockBonusRequest): void => {
 
   const transTime = request.transTime;
   const transId = id();
+  const participantLogs: Array<Record<string, string>> = [];
+  let totalShares = D(0);
+  let totalBonusShares = D(0);
+  let accountSnapshot: PublicAccountSnapshot | null = null;
 
   const tx = db.transaction(() => {
     // 获取所有活跃成员
@@ -1229,10 +1419,10 @@ export const executeStockBonus = (request: StockBonusRequest): void => {
     }));
 
     // 计算总送股数
-    const totalShares = roundShares(
+    totalShares = roundShares(
       memberLedgers.reduce((acc, ml) => acc.plus(D(ml.ledger.shares)), D(0)),
     );
-    const totalBonusShares = roundShares(totalShares.times(bonusRatio));
+    totalBonusShares = roundShares(totalShares.times(bonusRatio));
 
     // 记录交易（复用price字段存储比例）
     db.prepare(
@@ -1259,6 +1449,16 @@ export const executeStockBonus = (request: StockBonusRequest): void => {
         ? roundAvgPrice(currentCost.div(nextShares))
         : D(0);
 
+      participantLogs.push({
+        memberId,
+        previousShares: currentShares.toString(),
+        bonusShares: bonusShares.toString(),
+        nextShares: nextShares.toString(),
+        previousAvgPrice: ledger.avg_price,
+        nextAvgPrice: nextAvgPrice.toString(),
+        cost: currentCost.toString(),
+      });
+
       db.prepare(
         `
         INSERT INTO transaction_details
@@ -1280,11 +1480,22 @@ export const executeStockBonus = (request: StockBonusRequest): void => {
       });
     });
 
-    insertAccountSnapshot(db, transTime, transId);
+    accountSnapshot = insertAccountSnapshot(db, transTime, transId);
     validateConservation(db);
   });
 
   tx();
+
+  logSettlement('transaction.stock_bonus', {
+    transId,
+    transTime,
+    bonusRatio: bonusRatio.toString(),
+    totalSharesBefore: totalShares.toString(),
+    totalBonusShares: totalBonusShares.toString(),
+    participantCount: participantLogs.length,
+    participants: participantLogs,
+    publicAccount: accountSnapshot,
+  });
 };
 
 export const executeMemberExit = (request: ExitMemberRequest): void => {
@@ -1329,4 +1540,18 @@ export const executeMemberExit = (request: ExitMemberRequest): void => {
   });
 
   tx();
+
+  const finalLedger = getLatestLedgerByMember(db, memberId);
+  const accountSnapshot = getLatestPublicAccount();
+  logSettlement('member.exit', {
+    memberId,
+    exitTime,
+    exitPrice: exitPrice.toString(),
+    initialShares: initialLedger.shares,
+    initialCash: initialLedger.cash,
+    finalShares: finalLedger.shares,
+    finalCash: finalLedger.cash,
+    status: 'exited',
+    publicAccount: accountSnapshot,
+  });
 };
