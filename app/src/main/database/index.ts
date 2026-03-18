@@ -2,6 +2,8 @@ import path from 'node:path';
 
 import Database from 'better-sqlite3';
 
+import { TRADING_CONFIG } from '../../shared/constants/trading';
+
 let db: Database.Database | null = null;
 
 const CREATE_SCHEMA_SQL = `
@@ -67,6 +69,14 @@ CREATE TABLE IF NOT EXISTS account_snapshots (
   event_id TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS trading_config (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  commission_rate TEXT NOT NULL,
+  min_commission TEXT NOT NULL,
+  stamp_tax_rate TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_ledger_member_seq ON ledger_snapshots(member_id, seq);
 CREATE INDEX IF NOT EXISTS idx_transactions_time ON transactions(trans_time);
 CREATE INDEX IF NOT EXISTS idx_transaction_details_trans ON transaction_details(trans_id);
@@ -82,6 +92,17 @@ export const initializeDatabase = (userDataPath: string): Database.Database => {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.exec(CREATE_SCHEMA_SQL);
+  db.prepare(
+    `
+    INSERT INTO trading_config (id, commission_rate, min_commission, stamp_tax_rate)
+    VALUES (1, ?, ?, ?)
+    ON CONFLICT(id) DO NOTHING
+    `,
+  ).run(
+    TRADING_CONFIG.commissionRate,
+    TRADING_CONFIG.minCommission,
+    TRADING_CONFIG.stampTaxRate,
+  );
 
   return db;
 };

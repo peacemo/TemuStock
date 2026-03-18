@@ -45,6 +45,7 @@ body {
   display: grid;
   grid-template-columns: repeat(4, minmax(120px, 1fr));
   gap: 8px;
+  align-items: end;
 }
 
 .spacer {
@@ -115,6 +116,10 @@ button {
   color: #fff;
   border: none;
   cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
 }
 
 button:hover {

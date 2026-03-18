@@ -6,6 +6,7 @@ import type {
   MemberWithLedger,
   ReplayValidationResult,
   SellParticipantInput,
+  TradingConfig,
   TransactionDetailRecord,
   TransactionRecord,
 } from '../shared/types';
@@ -19,6 +20,11 @@ export const App = () => {
   const [publicCash, setPublicCash] = useState('0');
   const [publicShares, setPublicShares] = useState('0');
   const [message, setMessage] = useState('就绪');
+  const [tradingConfig, setTradingConfig] = useState<TradingConfig | null>(null);
+
+  const [commissionRate, setCommissionRate] = useState('0.0003');
+  const [minCommission, setMinCommission] = useState('5');
+  const [stampTaxRate, setStampTaxRate] = useState('0.001');
 
   const [newMemberName, setNewMemberName] = useState('');
   const [newMemberInitialCash, setNewMemberInitialCash] = useState('0');
@@ -53,11 +59,12 @@ export const App = () => {
   );
 
   const refresh = async () => {
-    const [membersResult, accountResult, transactionsResult, transactionDetailsResult] = await Promise.all([
+    const [membersResult, accountResult, transactionsResult, transactionDetailsResult, tradingConfigResult] = await Promise.all([
       window.desktopApi.listMembers(),
       window.desktopApi.getPublicAccount(),
       window.desktopApi.listTransactions(),
       window.desktopApi.listTransactionDetails(),
+      window.desktopApi.getTradingConfig(),
     ]);
 
     if (membersResult.ok && membersResult.data) {
@@ -78,6 +85,13 @@ export const App = () => {
 
     if (transactionDetailsResult.ok && transactionDetailsResult.data) {
       setTransactionDetails(transactionDetailsResult.data);
+    }
+
+    if (tradingConfigResult.ok && tradingConfigResult.data) {
+      setTradingConfig(tradingConfigResult.data);
+      setCommissionRate(tradingConfigResult.data.commissionRate);
+      setMinCommission(tradingConfigResult.data.minCommission);
+      setStampTaxRate(tradingConfigResult.data.stampTaxRate);
     }
   };
 
@@ -148,21 +162,29 @@ export const App = () => {
 
   const createMember = async (event: FormEvent) => {
     event.preventDefault();
-    const result = await window.desktopApi.createMember({
-      name: newMemberName,
-      joinDate: nowIsoLocal(),
-      initialCash: newMemberInitialCash,
+    if (!newMemberName || !newMemberInitialCash) return;
+
+    setConfirmDialog({
+      title: '确认创建成员',
+      lines: [`姓名：${newMemberName}`, `初始注资：${newMemberInitialCash}`],
+      onConfirm: async () => {
+        const result = await window.desktopApi.createMember({
+          name: newMemberName,
+          joinDate: nowIsoLocal(),
+          initialCash: newMemberInitialCash,
+        });
+
+        if (!result.ok) {
+          setMessage(result.error ?? '创建成员失败');
+          return;
+        }
+
+        setNewMemberName('');
+        setNewMemberInitialCash('0');
+        setMessage('成员创建成功');
+        await refresh();
+      },
     });
-
-    if (!result.ok) {
-      setMessage(result.error ?? '创建成员失败');
-      return;
-    }
-
-    setNewMemberName('');
-    setNewMemberInitialCash('0');
-    setMessage('成员创建成功');
-    await refresh();
   };
 
   const submitBuy = (event: FormEvent) => {
@@ -287,20 +309,63 @@ export const App = () => {
     });
   };
 
+  const submitTradingConfig = (event: FormEvent) => {
+    event.preventDefault();
+
+    const currentConfig = tradingConfig;
+
+    const lines = [
+      `买卖佣金费率：${currentConfig?.commissionRate ?? '-'} -> ${commissionRate}`,
+      `最低佣金：${currentConfig?.minCommission ?? '-'} -> ${minCommission}`,
+      `卖出印花税税率：${currentConfig?.stampTaxRate ?? '-'} -> ${stampTaxRate}`,
+    ];
+
+    setConfirmDialog({
+      title: '确认更新交易参数',
+      lines,
+      onConfirm: async () => {
+        const result = await window.desktopApi.updateTradingConfig({
+          commissionRate,
+          minCommission,
+          stampTaxRate,
+        });
+
+        if (!result.ok || !result.data) {
+          setMessage(result.error ?? '更新交易参数失败');
+          return;
+        }
+
+        setTradingConfig(result.data);
+        setCommissionRate(result.data.commissionRate);
+        setMinCommission(result.data.minCommission);
+        setStampTaxRate(result.data.stampTaxRate);
+        setMessage('交易参数更新成功');
+      },
+    });
+  };
+
   const submitDividend = async (event: FormEvent) => {
     event.preventDefault();
-    const result = await window.desktopApi.executeDividend({
-      transTime: nowIsoLocal(),
-      perShareDividend: dividendPerShare,
+    if (!dividendPerShare) return;
+
+    setConfirmDialog({
+      title: '确认分红',
+      lines: [`每股分红：${dividendPerShare}`],
+      onConfirm: async () => {
+        const result = await window.desktopApi.executeDividend({
+          transTime: nowIsoLocal(),
+          perShareDividend: dividendPerShare,
+        });
+
+        if (!result.ok) {
+          setMessage(result.error ?? '分红失败');
+          return;
+        }
+
+        setMessage('分红处理成功');
+        await refresh();
+      },
     });
-
-    if (!result.ok) {
-      setMessage(result.error ?? '分红失败');
-      return;
-    }
-
-    setMessage('分红处理成功');
-    await refresh();
   };
 
   const queryHistoricalSnapshot = async (event: FormEvent) => {
@@ -364,6 +429,37 @@ export const App = () => {
         <h1>TemuStock 多人合资记账</h1>
         <p>状态：{message}</p>
       </header>
+
+      <section className="card">
+        <h2>交易参数配置</h2>
+        <form className="form" onSubmit={submitTradingConfig}>
+          <label className="field">
+            <span className="field-title">买卖佣金费率</span>
+            <input
+              value={commissionRate}
+              onChange={(event) => setCommissionRate(event.target.value)}
+              required
+            />
+          </label>
+          <label className="field">
+            <span className="field-title">最低佣金</span>
+            <input
+              value={minCommission}
+              onChange={(event) => setMinCommission(event.target.value)}
+              required
+            />
+          </label>
+          <label className="field">
+            <span className="field-title">卖出印花税税率</span>
+            <input
+              value={stampTaxRate}
+              onChange={(event) => setStampTaxRate(event.target.value)}
+              required
+            />
+          </label>
+          <button type="submit">保存参数</button>
+        </form>
+      </section>
 
       <section className="card">
         <h2>公共账户</h2>

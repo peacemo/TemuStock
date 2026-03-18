@@ -44,6 +44,18 @@ export interface SellRequest {
   participants: SellParticipantInput[];
 }
 
+export interface TradingConfig {
+  commissionRate: string;
+  minCommission: string;
+  stampTaxRate: string;
+}
+
+export interface UpdateTradingConfigRequest {
+  commissionRate: string;
+  minCommission: string;
+  stampTaxRate: string;
+}
+
 export interface DividendRequest {
   transTime: string;
   perShareDividend: string;

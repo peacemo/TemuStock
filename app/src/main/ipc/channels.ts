@@ -13,4 +13,6 @@ export const IPC_CHANNELS = {
   getPublicAccount: 'account:latest',
   getHistoricalSnapshot: 'account:history-snapshot',
   validateReplay: 'account:validate-replay',
+  getTradingConfig: 'config:trading:get',
+  updateTradingConfig: 'config:trading:update',
 } as const;

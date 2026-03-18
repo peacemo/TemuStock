@@ -13,8 +13,10 @@ import type {
   ReverseTransactionRequest,
   SellRequest,
   StockBonusRequest,
+  TradingConfig,
   TransactionDetailRecord,
   TransactionRecord,
+  UpdateTradingConfigRequest,
   WithdrawCashRequest,
 } from '../../shared/types';
 import { IPC_CHANNELS } from './channels';
@@ -31,7 +33,9 @@ import {
   listMembersWithLatestLedger,
   listTransactionDetails,
   listTransactions,
+  getTradingConfig,
   reverseTransaction,
+  updateTradingConfig,
   validateReplayConsistency,
 } from '../services/trading-service';
 
@@ -123,5 +127,13 @@ export const registerIpcHandlers = (): void => {
 
   ipcMain.handle(IPC_CHANNELS.validateReplay, async () =>
     wrap<ReplayValidationResult>(() => validateReplayConsistency()),
+  );
+
+  ipcMain.handle(IPC_CHANNELS.getTradingConfig, async () =>
+    wrap<TradingConfig>(() => getTradingConfig()),
+  );
+
+  ipcMain.handle(IPC_CHANNELS.updateTradingConfig, async (_event, payload: UpdateTradingConfigRequest) =>
+    wrap<TradingConfig>(() => updateTradingConfig(payload)),
   );
 };

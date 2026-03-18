@@ -13,8 +13,10 @@ import {
   executeMemberExit,
   executeSell,
   executeStockBonus,
+  getTradingConfig,
   getLatestPublicAccount,
   listMembersWithLatestLedger,
+  updateTradingConfig,
 } from '../../../src/main/services/trading-service';
 import { D } from '../../../src/shared/utils/decimal';
 
@@ -322,5 +324,78 @@ describe.sequential('trading-service core math logic', () => {
 
     assertDecimalEqual(totals.cash.toString(), account!.totalCash);
     assertDecimalEqual(totals.shares.toString(), account!.totalShares);
+  });
+
+  it('applies updated trading config to subsequent buy and sell transactions', () => {
+    updateTradingConfig({
+      commissionRate: '0.001',
+      minCommission: '8',
+      stampTaxRate: '0.002',
+    });
+
+    const config = getTradingConfig();
+    expect(config.commissionRate).toBe('0.001');
+    expect(config.minCommission).toBe('8');
+    expect(config.stampTaxRate).toBe('0.002');
+
+    const a = createMember({
+      name: 'A',
+      joinDate: '2026-03-18T09:00:00.000Z',
+      initialCash: '0',
+    });
+    const b = createMember({
+      name: 'B',
+      joinDate: '2026-03-18T09:00:01.000Z',
+      initialCash: '0',
+    });
+
+    executeBuy({
+      transTime: '2026-03-18T10:00:00.000Z',
+      price: '10',
+      participants: [
+        { memberId: a.id, shares: '100' },
+        { memberId: b.id, shares: '200' },
+      ],
+    });
+
+    executeSell({
+      transTime: '2026-03-18T11:00:00.000Z',
+      price: '12',
+      participants: [
+        { memberId: a.id, shares: '40' },
+        { memberId: b.id, shares: '100' },
+      ],
+    });
+
+    const buyTx = getDatabase()
+      .prepare(
+        `
+        SELECT total_amount, total_commission
+        FROM transactions
+        WHERE type = 'buy'
+        ORDER BY created_at DESC
+        LIMIT 1
+        `,
+      )
+      .get() as { total_amount: string; total_commission: string };
+
+    assertDecimalEqual(buyTx.total_amount, '3008');
+    assertDecimalEqual(buyTx.total_commission, '8');
+
+    const sellTx = getDatabase()
+      .prepare(
+        `
+        SELECT total_amount, total_commission, total_tax
+        FROM transactions
+        WHERE type = 'sell'
+        ORDER BY created_at DESC
+        LIMIT 1
+        `,
+      )
+      .get() as { total_amount: string; total_commission: string; total_tax: string };
+
+    assertDecimalEqual(sellTx.total_amount, '1680');
+    assertDecimalEqual(sellTx.total_commission, '8');
+    assertDecimalEqual(sellTx.total_tax, '3.36');
   });
 });

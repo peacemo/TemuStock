@@ -14,8 +14,10 @@ import type {
   ReverseTransactionRequest,
   SellRequest,
   StockBonusRequest,
+  TradingConfig,
   TransactionDetailRecord,
   TransactionRecord,
+  UpdateTradingConfigRequest,
   WithdrawCashRequest,
 } from '../shared/types';
 
@@ -34,6 +36,8 @@ type DesktopApi = {
   getPublicAccount: () => Promise<ApiResult<PublicAccountSnapshot | null>>;
   getHistoricalSnapshot: (payload: LedgerHistoryQuery) => Promise<ApiResult<HistoricalSnapshot>>;
   validateReplay: () => Promise<ApiResult<ReplayValidationResult>>;
+  getTradingConfig: () => Promise<ApiResult<TradingConfig>>;
+  updateTradingConfig: (payload: UpdateTradingConfigRequest) => Promise<ApiResult<TradingConfig>>;
 };
 
 const api: DesktopApi = {
@@ -51,6 +55,8 @@ const api: DesktopApi = {
   getPublicAccount: () => ipcRenderer.invoke('account:latest'),
   getHistoricalSnapshot: (payload) => ipcRenderer.invoke('account:history-snapshot', payload),
   validateReplay: () => ipcRenderer.invoke('account:validate-replay'),
+  getTradingConfig: () => ipcRenderer.invoke('config:trading:get'),
+  updateTradingConfig: (payload) => ipcRenderer.invoke('config:trading:update', payload),
 };
 
 contextBridge.exposeInMainWorld('desktopApi', api);

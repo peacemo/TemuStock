@@ -24,9 +24,11 @@ import type {
   SellParticipantInput,
   SellRequest,
   StockBonusRequest,
+  TradingConfig,
   TransactionDetailRecord,
   TransactionRecord,
   TransactionType,
+  UpdateTradingConfigRequest,
   WithdrawCashRequest,
 } from '../../shared/types';
 
@@ -45,6 +47,12 @@ type MemberRow = {
   name: string;
   join_date: string;
   status: 'active' | 'exited';
+};
+
+type TradingConfigRow = {
+  commission_rate: string;
+  min_commission: string;
+  stamp_tax_rate: string;
 };
 
 const checksumOf = (value: string): string =>
@@ -269,6 +277,90 @@ const ensureMemberExists = (db: Database, memberId: string): MemberRow => {
     throw new Error(`成员 ${member.name} 状态不是 active`);
   }
   return member;
+};
+
+const loadTradingConfigRow = (db: Database): TradingConfigRow => {
+  const row = db
+    .prepare(
+      `
+      SELECT commission_rate, min_commission, stamp_tax_rate
+      FROM trading_config
+      WHERE id = 1
+      LIMIT 1
+      `,
+    )
+    .get() as TradingConfigRow | undefined;
+
+  if (!row) {
+    return {
+      commission_rate: TRADING_CONFIG.commissionRate,
+      min_commission: TRADING_CONFIG.minCommission,
+      stamp_tax_rate: TRADING_CONFIG.stampTaxRate,
+    };
+  }
+
+  return row;
+};
+
+const tradingConfigFromRow = (row: TradingConfigRow): TradingConfig => ({
+  commissionRate: row.commission_rate,
+  minCommission: row.min_commission,
+  stampTaxRate: row.stamp_tax_rate,
+});
+
+const parseTradingConfig = (input: {
+  commissionRate: string;
+  minCommission: string;
+  stampTaxRate: string;
+}): TradingConfig => {
+  const commissionRate = D(input.commissionRate);
+  const minCommission = roundAmount(input.minCommission);
+  const stampTaxRate = D(input.stampTaxRate);
+
+  if (commissionRate.lessThan(0)) {
+    throw new Error('买卖佣金费率不能小于 0');
+  }
+
+  if (minCommission.lessThan(0)) {
+    throw new Error('最低佣金不能小于 0');
+  }
+
+  if (stampTaxRate.lessThan(0)) {
+    throw new Error('卖出印花税税率不能小于 0');
+  }
+
+  return {
+    commissionRate: commissionRate.toString(),
+    minCommission: minCommission.toString(),
+    stampTaxRate: stampTaxRate.toString(),
+  };
+};
+
+export const getTradingConfig = (): TradingConfig => {
+  const db = getDatabase();
+  const row = loadTradingConfigRow(db);
+  return tradingConfigFromRow(row);
+};
+
+export const updateTradingConfig = (request: UpdateTradingConfigRequest): TradingConfig => {
+  const db = getDatabase();
+  const nextConfig = parseTradingConfig(request);
+
+  db.prepare(
+    `
+    UPDATE trading_config
+    SET commission_rate = ?, min_commission = ?, stamp_tax_rate = ?, updated_at = datetime('now')
+    WHERE id = 1
+    `,
+  ).run(nextConfig.commissionRate, nextConfig.minCommission, nextConfig.stampTaxRate);
+
+  logSettlement('config.trading.update', {
+    commissionRate: nextConfig.commissionRate,
+    minCommission: nextConfig.minCommission,
+    stampTaxRate: nextConfig.stampTaxRate,
+  });
+
+  return nextConfig;
 };
 
 export const listMembersWithLatestLedger = (): MemberWithLedger[] => {
@@ -692,6 +784,7 @@ const validateBuyParticipants = (
 
 export const executeBuy = (request: BuyRequest): void => {
   const db = getDatabase();
+  const config = getTradingConfig();
   const price = roundPrice(request.price);
   if (!isPositive(price)) {
     throw new Error('买入价格必须大于 0');
@@ -715,8 +808,8 @@ export const executeBuy = (request: BuyRequest): void => {
 
     // Step 2: 计算总佣金和总投入
     // 佣金基于 (价格 * 股数) 计算
-    const commissionRaw = roundAmount(rawTotalAmount.times(TRADING_CONFIG.commissionRate));
-    commissionActual = roundAmount(DecimalJs.max(commissionRaw, D(TRADING_CONFIG.minCommission)));
+    const commissionRaw = roundAmount(rawTotalAmount.times(config.commissionRate));
+    commissionActual = roundAmount(DecimalJs.max(commissionRaw, D(config.minCommission)));
     totalInvest = roundAmount(rawTotalAmount.plus(commissionActual));
 
     // Step 3: 按股数比例分摊总投入和佣金
@@ -834,6 +927,8 @@ export const executeBuy = (request: BuyRequest): void => {
     totalShares: totalShares.toString(),
     totalInvest: totalInvest.toString(),
     totalCommission: commissionActual.toString(),
+    commissionRate: config.commissionRate,
+    minCommission: config.minCommission,
     totalDeposit: totalDeposit.toString(),
     participantCount: participantLogs.length,
     participants: participantLogs,
@@ -871,6 +966,7 @@ const validateSellParticipants = (
 
 export const executeSell = (request: SellRequest): void => {
   const db = getDatabase();
+  const config = getTradingConfig();
   const price = roundPrice(request.price);
   if (!isPositive(price)) {
     throw new Error('卖出价格必须大于 0');
@@ -892,9 +988,9 @@ export const executeSell = (request: SellRequest): void => {
     );
     const grossAmounts = participants.map((participant) => roundAmount(participant.shares.times(price)));
     totalSellAmount = roundAmount(grossAmounts.reduce((acc, amount) => acc.plus(amount), D(0)));
-    const commissionRaw = roundAmount(totalSellAmount.times(TRADING_CONFIG.commissionRate));
-    commissionActual = roundAmount(DecimalJs.max(commissionRaw, D(TRADING_CONFIG.minCommission)));
-    totalTax = roundAmount(totalSellAmount.times(TRADING_CONFIG.stampTaxRate));
+    const commissionRaw = roundAmount(totalSellAmount.times(config.commissionRate));
+    commissionActual = roundAmount(DecimalJs.max(commissionRaw, D(config.minCommission)));
+    totalTax = roundAmount(totalSellAmount.times(config.stampTaxRate));
     const commissions = allocateRoundedByWeights(commissionActual, grossAmounts, roundAmount);
     const taxes = allocateRoundedByWeights(totalTax, grossAmounts, roundAmount);
 
@@ -1008,6 +1104,9 @@ export const executeSell = (request: SellRequest): void => {
     totalAmount: totalSellAmount.toString(),
     totalCommission: commissionActual.toString(),
     totalTax: totalTax.toString(),
+    commissionRate: config.commissionRate,
+    minCommission: config.minCommission,
+    stampTaxRate: config.stampTaxRate,
     participantCount: participantLogs.length,
     participants: participantLogs,
     publicAccount: accountSnapshot,

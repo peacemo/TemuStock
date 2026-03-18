@@ -12,8 +12,10 @@ import type {
   ReverseTransactionRequest,
   SellRequest,
   StockBonusRequest,
+  TradingConfig,
   TransactionDetailRecord,
   TransactionRecord,
+  UpdateTradingConfigRequest,
   WithdrawCashRequest,
 } from '../shared/types';
 
@@ -32,6 +34,8 @@ type DesktopApi = {
   getPublicAccount: () => Promise<ApiResult<PublicAccountSnapshot | null>>;
   getHistoricalSnapshot: (payload: LedgerHistoryQuery) => Promise<ApiResult<HistoricalSnapshot>>;
   validateReplay: () => Promise<ApiResult<ReplayValidationResult>>;
+  getTradingConfig: () => Promise<ApiResult<TradingConfig>>;
+  updateTradingConfig: (payload: UpdateTradingConfigRequest) => Promise<ApiResult<TradingConfig>>;
 };
 
 declare global {
