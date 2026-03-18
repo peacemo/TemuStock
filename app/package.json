@@ -11,8 +11,10 @@
     "make": "electron-forge make",
     "publish": "electron-forge publish",
     "lint": "eslint --ext .ts,.tsx .",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "rebuild:native:node": "npm rebuild better-sqlite3",
+    "rebuild:native:electron": "npx electron-rebuild -f -w better-sqlite3",
+    "test": "sh -c 'npm run rebuild:native:node && vitest run; code=$?; npm run rebuild:native:electron; exit $code'",
+    "test:watch": "sh -c 'npm run rebuild:native:node && vitest; code=$?; npm run rebuild:native:electron; exit $code'"
   },
   "keywords": [],
   "author": {
