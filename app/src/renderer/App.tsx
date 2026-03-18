@@ -29,8 +29,6 @@ export const App = () => {
   const [withdrawMemberId, setWithdrawMemberId] = useState('');
   const [withdrawAmount, setWithdrawAmount] = useState('0');
 
-  const [bonusRatio, setBonusRatio] = useState('1.0');
-
   const [exitMemberId, setExitMemberId] = useState('');
   const [exitPrice, setExitPrice] = useState('10.000');
 
@@ -223,28 +221,6 @@ export const App = () => {
           return;
         }
         setMessage('提现成功');
-        await refresh();
-      },
-    });
-  };
-
-  const submitStockBonus = async (event: FormEvent) => {
-    event.preventDefault();
-    if (!bonusRatio) return;
-
-    setConfirmDialog({
-      title: '确认送股',
-      lines: [`比例：${bonusRatio}`],
-      onConfirm: async () => {
-        const result = await window.desktopApi.executeStockBonus({
-          transTime: nowIsoLocal(),
-          bonusRatio: bonusRatio,
-        });
-        if (!result.ok) {
-          setMessage(result.error ?? '送股失败');
-          return;
-        }
-        setMessage('送股成功');
         await refresh();
       },
     });
@@ -489,21 +465,6 @@ export const App = () => {
             />
           </label>
           <button type="submit">执行提现</button>
-        </form>
-      </section>
-
-      <section className="card">
-        <h2>送股 (Stock Bonus / Split)</h2>
-        <form className="form" onSubmit={submitStockBonus}>
-          <label className="field">
-            <span className="field-title">送股比例 s (每股送 s 股，如 10送2 填 0.2)</span>
-            <input
-              value={bonusRatio}
-              onChange={(e) => setBonusRatio(e.target.value)}
-              required
-            />
-          </label>
-          <button type="submit">执行送股</button>
         </form>
       </section>
 
