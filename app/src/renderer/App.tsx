@@ -6,7 +6,6 @@ import type {
   MemberWithLedger,
   ReplayValidationResult,
   SellParticipantInput,
-  TradingConfig,
   TransactionDetailRecord,
   TransactionRecord,
 } from '../shared/types';
@@ -20,16 +19,12 @@ export const App = () => {
   const [publicCash, setPublicCash] = useState('0');
   const [publicShares, setPublicShares] = useState('0');
   const [message, setMessage] = useState('就绪');
-  const [tradingConfig, setTradingConfig] = useState<TradingConfig | null>(null);
-
-  const [commissionRate, setCommissionRate] = useState('0.0003');
-  const [minCommission, setMinCommission] = useState('5');
-  const [stampTaxRate, setStampTaxRate] = useState('0.001');
 
   const [newMemberName, setNewMemberName] = useState('');
   const [newMemberInitialCash, setNewMemberInitialCash] = useState('0');
 
   const [buyPrice, setBuyPrice] = useState('10.000');
+  const [buyTotalFeeAmount, setBuyTotalFeeAmount] = useState('5');
   const [buyParticipants, setBuyParticipants] = useState<BuyParticipantInput[]>([]);
 
   const [withdrawMemberId, setWithdrawMemberId] = useState('');
@@ -37,8 +32,10 @@ export const App = () => {
 
   const [exitMemberId, setExitMemberId] = useState('');
   const [exitPrice, setExitPrice] = useState('10.000');
+  const [exitTotalFeeAmount, setExitTotalFeeAmount] = useState('5');
 
   const [sellPrice, setSellPrice] = useState('10.000');
+  const [sellTotalFeeAmount, setSellTotalFeeAmount] = useState('5');
   const [sellParticipants, setSellParticipants] = useState<SellParticipantInput[]>([]);
 
   const [confirmDialog, setConfirmDialog] = useState<{
@@ -59,12 +56,11 @@ export const App = () => {
   );
 
   const refresh = async () => {
-    const [membersResult, accountResult, transactionsResult, transactionDetailsResult, tradingConfigResult] = await Promise.all([
+    const [membersResult, accountResult, transactionsResult, transactionDetailsResult] = await Promise.all([
       window.desktopApi.listMembers(),
       window.desktopApi.getPublicAccount(),
       window.desktopApi.listTransactions(),
       window.desktopApi.listTransactionDetails(),
-      window.desktopApi.getTradingConfig(),
     ]);
 
     if (membersResult.ok && membersResult.data) {
@@ -85,13 +81,6 @@ export const App = () => {
 
     if (transactionDetailsResult.ok && transactionDetailsResult.data) {
       setTransactionDetails(transactionDetailsResult.data);
-    }
-
-    if (tradingConfigResult.ok && tradingConfigResult.data) {
-      setTradingConfig(tradingConfigResult.data);
-      setCommissionRate(tradingConfigResult.data.commissionRate);
-      setMinCommission(tradingConfigResult.data.minCommission);
-      setStampTaxRate(tradingConfigResult.data.stampTaxRate);
     }
   };
 
@@ -197,6 +186,7 @@ export const App = () => {
 
     const lines = [
       `买入价格：${buyPrice}`,
+      `本笔总费用：${buyTotalFeeAmount}`,
       ...buyParticipants.map((p) => {
         const m = activeMembers.find((member) => member.id === p.memberId);
         return `${m?.name ?? p.memberId}：${p.shares} 股`;
@@ -210,6 +200,7 @@ export const App = () => {
         const result = await window.desktopApi.executeBuy({
           transTime: nowIsoLocal(),
           price: buyPrice,
+          totalFeeAmount: buyTotalFeeAmount,
           participants: buyParticipants,
         });
 
@@ -255,12 +246,13 @@ export const App = () => {
     const m = activeMembers.find((member) => member.id === exitMemberId);
     setConfirmDialog({
       title: '确认成员退出',
-      lines: [`成员：${m?.name}`, `退出股价：${exitPrice}`],
+      lines: [`成员：${m?.name}`, `退出股价：${exitPrice}`, `本笔总费用：${exitTotalFeeAmount}`],
       onConfirm: async () => {
         const result = await window.desktopApi.executeMemberExit({
           transTime: nowIsoLocal(),
           memberId: exitMemberId,
           exitPrice: exitPrice,
+          totalFeeAmount: exitTotalFeeAmount,
         });
         if (!result.ok) {
           setMessage(result.error ?? '成员退出失败');
@@ -282,6 +274,7 @@ export const App = () => {
 
     const lines = [
       `卖出价格：${sellPrice}`,
+      `本笔总费用：${sellTotalFeeAmount}`,
       ...sellParticipants.map((p) => {
         const m = activeMembers.find((member) => member.id === p.memberId);
         return `${m?.name ?? p.memberId}：${p.shares} 股`;
@@ -295,6 +288,7 @@ export const App = () => {
         const result = await window.desktopApi.executeSell({
           transTime: nowIsoLocal(),
           price: sellPrice,
+          totalFeeAmount: sellTotalFeeAmount,
           participants: sellParticipants,
         });
 
@@ -305,41 +299,6 @@ export const App = () => {
 
         setMessage('卖出成功');
         await refresh();
-      },
-    });
-  };
-
-  const submitTradingConfig = (event: FormEvent) => {
-    event.preventDefault();
-
-    const currentConfig = tradingConfig;
-
-    const lines = [
-      `买卖佣金费率：${currentConfig?.commissionRate ?? '-'} -> ${commissionRate}`,
-      `最低佣金：${currentConfig?.minCommission ?? '-'} -> ${minCommission}`,
-      `卖出印花税税率：${currentConfig?.stampTaxRate ?? '-'} -> ${stampTaxRate}`,
-    ];
-
-    setConfirmDialog({
-      title: '确认更新交易参数',
-      lines,
-      onConfirm: async () => {
-        const result = await window.desktopApi.updateTradingConfig({
-          commissionRate,
-          minCommission,
-          stampTaxRate,
-        });
-
-        if (!result.ok || !result.data) {
-          setMessage(result.error ?? '更新交易参数失败');
-          return;
-        }
-
-        setTradingConfig(result.data);
-        setCommissionRate(result.data.commissionRate);
-        setMinCommission(result.data.minCommission);
-        setStampTaxRate(result.data.stampTaxRate);
-        setMessage('交易参数更新成功');
       },
     });
   };
@@ -431,37 +390,6 @@ export const App = () => {
       </header>
 
       <section className="card">
-        <h2>交易参数配置</h2>
-        <form className="form" onSubmit={submitTradingConfig}>
-          <label className="field">
-            <span className="field-title">买卖佣金费率</span>
-            <input
-              value={commissionRate}
-              onChange={(event) => setCommissionRate(event.target.value)}
-              required
-            />
-          </label>
-          <label className="field">
-            <span className="field-title">最低佣金</span>
-            <input
-              value={minCommission}
-              onChange={(event) => setMinCommission(event.target.value)}
-              required
-            />
-          </label>
-          <label className="field">
-            <span className="field-title">卖出印花税税率</span>
-            <input
-              value={stampTaxRate}
-              onChange={(event) => setStampTaxRate(event.target.value)}
-              required
-            />
-          </label>
-          <button type="submit">保存参数</button>
-        </form>
-      </section>
-
-      <section className="card">
         <h2>公共账户</h2>
         <div className="grid2">
           <div>总现金：{publicCash}</div>
@@ -500,6 +428,14 @@ export const App = () => {
             <input
               value={buyPrice}
               onChange={(event) => setBuyPrice(event.target.value)}
+              required
+            />
+          </label>
+          <label className="field">
+            <span className="field-title">本笔总费用</span>
+            <input
+              value={buyTotalFeeAmount}
+              onChange={(event) => setBuyTotalFeeAmount(event.target.value)}
               required
             />
           </label>
@@ -586,6 +522,14 @@ export const App = () => {
               required
             />
           </label>
+          <label className="field">
+            <span className="field-title">本笔总费用</span>
+            <input
+              value={exitTotalFeeAmount}
+              onChange={(e) => setExitTotalFeeAmount(e.target.value)}
+              required
+            />
+          </label>
           <button type="submit">执行退出</button>
         </form>
       </section>
@@ -598,6 +542,14 @@ export const App = () => {
             <input
               value={sellPrice}
               onChange={(event) => setSellPrice(event.target.value)}
+              required
+            />
+          </label>
+          <label className="field">
+            <span className="field-title">本笔总费用</span>
+            <input
+              value={sellTotalFeeAmount}
+              onChange={(event) => setSellTotalFeeAmount(event.target.value)}
               required
             />
           </label>
@@ -661,7 +613,7 @@ export const App = () => {
               <th>持股</th>
               <th>成本</th>
               <th>均价</th>
-              <th>已实现盈亏</th>
+              <th>已实现盈亏（含费用）</th>
             </tr>
           </thead>
           <tbody>
@@ -689,8 +641,7 @@ export const App = () => {
               <th>价格/分红</th>
               <th>总股数</th>
               <th>总金额</th>
-              <th>佣金</th>
-              <th>税费</th>
+              <th>额外支出</th>
             </tr>
           </thead>
           <tbody>
@@ -701,8 +652,7 @@ export const App = () => {
                 <td>{trans.price}</td>
                 <td>{trans.totalShares}</td>
                 <td>{trans.totalAmount}</td>
-                <td>{trans.totalCommission}</td>
-                <td>{trans.totalTax}</td>
+                <td>{trans.totalExtraExpense}</td>
               </tr>
             ))}
           </tbody>
@@ -718,8 +668,7 @@ export const App = () => {
               <th>成员</th>
               <th>股数变动</th>
               <th>金额</th>
-              <th>佣金</th>
-              <th>税费</th>
+              <th>额外支出</th>
               <th>净现金</th>
               <th>成本调整</th>
               <th>已实现盈亏</th>
@@ -732,8 +681,7 @@ export const App = () => {
                 <td>{detail.memberName}</td>
                 <td>{detail.shares}</td>
                 <td>{detail.amount}</td>
-                <td>{detail.commission}</td>
-                <td>{detail.tax}</td>
+                <td>{detail.extraExpense}</td>
                 <td>{detail.netCash}</td>
                 <td>{detail.costAdjust}</td>
                 <td>{detail.realizedProfit}</td>
@@ -771,7 +719,7 @@ export const App = () => {
                   <th>持股</th>
                   <th>成本</th>
                   <th>均价</th>
-                  <th>已实现盈亏</th>
+                  <th>已实现盈亏（含费用）</th>
                 </tr>
               </thead>
               <tbody>

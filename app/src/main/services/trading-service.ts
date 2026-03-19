@@ -5,7 +5,6 @@ import DecimalJs from 'decimal.js';
 
 import { getDatabase } from '../database';
 import { logSettlement } from '../logging/settlement-logger';
-import { TRADING_CONFIG } from '../../shared/constants/trading';
 import { D, isPositive, roundAmount, roundAvgPrice, roundPrice, roundShares } from '../../shared/utils/decimal';
 import type {
   BuyParticipantInput,
@@ -24,11 +23,9 @@ import type {
   SellParticipantInput,
   SellRequest,
   StockBonusRequest,
-  TradingConfig,
   TransactionDetailRecord,
   TransactionRecord,
   TransactionType,
-  UpdateTradingConfigRequest,
   WithdrawCashRequest,
 } from '../../shared/types';
 
@@ -47,12 +44,6 @@ type MemberRow = {
   name: string;
   join_date: string;
   status: 'active' | 'exited';
-};
-
-type TradingConfigRow = {
-  commission_rate: string;
-  min_commission: string;
-  stamp_tax_rate: string;
 };
 
 const checksumOf = (value: string): string =>
@@ -279,90 +270,6 @@ const ensureMemberExists = (db: Database, memberId: string): MemberRow => {
   return member;
 };
 
-const loadTradingConfigRow = (db: Database): TradingConfigRow => {
-  const row = db
-    .prepare(
-      `
-      SELECT commission_rate, min_commission, stamp_tax_rate
-      FROM trading_config
-      WHERE id = 1
-      LIMIT 1
-      `,
-    )
-    .get() as TradingConfigRow | undefined;
-
-  if (!row) {
-    return {
-      commission_rate: TRADING_CONFIG.commissionRate,
-      min_commission: TRADING_CONFIG.minCommission,
-      stamp_tax_rate: TRADING_CONFIG.stampTaxRate,
-    };
-  }
-
-  return row;
-};
-
-const tradingConfigFromRow = (row: TradingConfigRow): TradingConfig => ({
-  commissionRate: row.commission_rate,
-  minCommission: row.min_commission,
-  stampTaxRate: row.stamp_tax_rate,
-});
-
-const parseTradingConfig = (input: {
-  commissionRate: string;
-  minCommission: string;
-  stampTaxRate: string;
-}): TradingConfig => {
-  const commissionRate = D(input.commissionRate);
-  const minCommission = roundAmount(input.minCommission);
-  const stampTaxRate = D(input.stampTaxRate);
-
-  if (commissionRate.lessThan(0)) {
-    throw new Error('买卖佣金费率不能小于 0');
-  }
-
-  if (minCommission.lessThan(0)) {
-    throw new Error('最低佣金不能小于 0');
-  }
-
-  if (stampTaxRate.lessThan(0)) {
-    throw new Error('卖出印花税税率不能小于 0');
-  }
-
-  return {
-    commissionRate: commissionRate.toString(),
-    minCommission: minCommission.toString(),
-    stampTaxRate: stampTaxRate.toString(),
-  };
-};
-
-export const getTradingConfig = (): TradingConfig => {
-  const db = getDatabase();
-  const row = loadTradingConfigRow(db);
-  return tradingConfigFromRow(row);
-};
-
-export const updateTradingConfig = (request: UpdateTradingConfigRequest): TradingConfig => {
-  const db = getDatabase();
-  const nextConfig = parseTradingConfig(request);
-
-  db.prepare(
-    `
-    UPDATE trading_config
-    SET commission_rate = ?, min_commission = ?, stamp_tax_rate = ?, updated_at = datetime('now')
-    WHERE id = 1
-    `,
-  ).run(nextConfig.commissionRate, nextConfig.minCommission, nextConfig.stampTaxRate);
-
-  logSettlement('config.trading.update', {
-    commissionRate: nextConfig.commissionRate,
-    minCommission: nextConfig.minCommission,
-    stampTaxRate: nextConfig.stampTaxRate,
-  });
-
-  return nextConfig;
-};
-
 export const listMembersWithLatestLedger = (): MemberWithLedger[] => {
   const db = getDatabase();
   const rows = db
@@ -417,7 +324,7 @@ export const listTransactions = (): TransactionRecord[] => {
   const rows = db
     .prepare(
       `
-      SELECT id, trans_time, type, price, total_shares, total_amount, total_commission, total_tax, status
+      SELECT id, trans_time, type, price, total_shares, total_amount, total_extra_expense, status
       FROM transactions
       ORDER BY trans_time DESC, created_at DESC
       `,
@@ -429,8 +336,7 @@ export const listTransactions = (): TransactionRecord[] => {
     price: string;
     total_shares: string;
     total_amount: string;
-    total_commission: string;
-    total_tax: string;
+    total_extra_expense: string;
     status: 'confirmed' | 'reversed';
   }>;
 
@@ -441,8 +347,7 @@ export const listTransactions = (): TransactionRecord[] => {
     price: row.price,
     totalShares: row.total_shares,
     totalAmount: row.total_amount,
-    totalCommission: row.total_commission,
-    totalTax: row.total_tax,
+    totalExtraExpense: row.total_extra_expense,
     status: row.status,
   }));
 };
@@ -526,8 +431,7 @@ export const listTransactionDetails = (): TransactionDetailRecord[] => {
              m.name AS member_name,
              td.shares,
              td.amount,
-             td.commission,
-             td.tax,
+             td.extra_expense,
              td.net_cash,
              td.cost_adjust,
              td.realized_profit
@@ -543,8 +447,7 @@ export const listTransactionDetails = (): TransactionDetailRecord[] => {
     member_name: string;
     shares: string;
     amount: string;
-    commission: string;
-    tax: string;
+    extra_expense: string;
     net_cash: string;
     cost_adjust: string;
     realized_profit: string;
@@ -557,8 +460,7 @@ export const listTransactionDetails = (): TransactionDetailRecord[] => {
     memberName: row.member_name,
     shares: row.shares,
     amount: row.amount,
-    commission: row.commission,
-    tax: row.tax,
+    extraExpense: row.extra_expense,
     netCash: row.net_cash,
     costAdjust: row.cost_adjust,
     realizedProfit: row.realized_profit,
@@ -784,7 +686,6 @@ const validateBuyParticipants = (
 
 export const executeBuy = (request: BuyRequest): void => {
   const db = getDatabase();
-  const config = getTradingConfig();
   const price = roundPrice(request.price);
   if (!isPositive(price)) {
     throw new Error('买入价格必须大于 0');
@@ -796,28 +697,22 @@ export const executeBuy = (request: BuyRequest): void => {
   let totalDeposit = D(0);
   let totalShares = D(0);
   let totalInvest = D(0);
-  let commissionActual = D(0);
+  let totalExtraExpense = D(0);
   let accountSnapshot: PublicAccountSnapshot | null = null;
 
   const tx = db.transaction(() => {
     const participants = validateBuyParticipants(db, request.participants);
 
-    // Step 1: 计算总股数和总原始金额
     totalShares = participants.reduce((acc, p) => acc.plus(p.shares), D(0));
     const rawTotalAmount = totalShares.times(price);
 
-    // Step 2: 计算总佣金和总投入
-    // 佣金基于 (价格 * 股数) 计算
-    const commissionRaw = roundAmount(rawTotalAmount.times(config.commissionRate));
-    commissionActual = roundAmount(DecimalJs.max(commissionRaw, D(config.minCommission)));
-    totalInvest = roundAmount(rawTotalAmount.plus(commissionActual));
+    totalExtraExpense = parseManualTotalFee(request.totalFeeAmount);
+    totalInvest = roundAmount(rawTotalAmount.plus(totalExtraExpense));
 
-    // Step 3: 按股数比例分摊总投入和佣金
     const shareWeights = participants.map((p) => p.shares);
     const individualInvests = allocateRoundedByWeights(totalInvest, shareWeights, roundAmount);
-    const individualCommissions = allocateRoundedByWeights(commissionActual, shareWeights, roundAmount);
+    const individualExpenses = allocateRoundedByWeights(totalExtraExpense, shareWeights, roundAmount);
 
-    // Step 4: 处理入金 (如果现金不足则自动补足)
     const deposits: DecimalJs[] = [];
     participants.forEach((participant, index) => {
       const invest = individualInvests[index];
@@ -825,19 +720,17 @@ export const executeBuy = (request: BuyRequest): void => {
       deposits.push(deposit);
     });
 
-    // 如果有入金，更新总现金快照
     totalDeposit = deposits.reduce((acc, d) => acc.plus(d), D(0));
     if (totalDeposit.greaterThan(0)) {
       insertAccountSnapshot(db, transTime, transId);
     }
 
-    // Step 5: 记录交易主表
     db.prepare(
       `
       INSERT INTO transactions
-      (id, trans_time, type, price, total_shares, total_amount, total_commission, total_tax, status)
+      (id, trans_time, type, price, total_shares, total_amount, total_extra_expense, status)
       VALUES
-      (?, ?, 'buy', ?, ?, ?, ?, '0', 'confirmed')
+      (?, ?, 'buy', ?, ?, ?, ?, 'confirmed')
       `,
     ).run(
       transId,
@@ -845,24 +738,25 @@ export const executeBuy = (request: BuyRequest): void => {
       price.toString(),
       totalShares.toString(),
       totalInvest.toString(),
-      commissionActual.toString(),
+      totalExtraExpense.toString(),
     );
 
-    // Step 6: 更新个人账本快照及详情
     participants.forEach((participant, index) => {
       const investAmount = individualInvests[index];
-      const commission = individualCommissions[index];
+      const extraExpense = individualExpenses[index];
       const buyShares = participant.shares;
-      const actualBuyValue = roundAmount(investAmount.minus(commission));
+      const actualBuyValue = roundAmount(investAmount.minus(extraExpense));
 
       const ledger = getLatestLedgerByMember(db, participant.memberId);
       const previousShares = D(ledger.shares);
       const previousCost = D(ledger.cost);
       const previousCash = D(ledger.cash);
+      const previousRealizedProfit = D(ledger.realized_profit);
 
       const nextShares = roundShares(previousShares.plus(buyShares));
       const nextCost = roundAmount(previousCost.plus(actualBuyValue));
       const nextCash = roundAmount(previousCash.minus(investAmount));
+      const nextRealizedProfit = roundAmount(previousRealizedProfit.minus(extraExpense));
       const avgPrice = nextShares.greaterThan(0)
         ? roundAvgPrice(nextCost.div(nextShares))
         : D(0);
@@ -871,16 +765,18 @@ export const executeBuy = (request: BuyRequest): void => {
         memberId: participant.memberId,
         shares: buyShares.toString(),
         investAmount: investAmount.toString(),
-        commission: commission.toString(),
+        extraExpense: extraExpense.toString(),
         actualBuyValue: actualBuyValue.toString(),
         deposit: deposits[index].toString(),
         previousCash: previousCash.toString(),
         previousShares: previousShares.toString(),
         previousCost: previousCost.toString(),
+        previousRealizedProfit: previousRealizedProfit.toString(),
         nextCash: nextCash.toString(),
         nextShares: nextShares.toString(),
         nextCost: nextCost.toString(),
         nextAvgPrice: avgPrice.toString(),
+        nextRealizedProfit: nextRealizedProfit.toString(),
       });
 
       insertLedgerSnapshot(db, {
@@ -890,16 +786,16 @@ export const executeBuy = (request: BuyRequest): void => {
         shares: nextShares.toDecimalPlaces(3).toString(),
         cost: nextCost.toDecimalPlaces(2).toString(),
         avgPrice: avgPrice.toString(),
-        realizedProfit: ledger.realized_profit,
+        realizedProfit: nextRealizedProfit.toString(),
         eventId: transId,
       });
 
       db.prepare(
         `
         INSERT INTO transaction_details
-        (id, trans_id, member_id, shares, amount, commission, tax, net_cash, cost_adjust, realized_profit, additional_deposit)
+        (id, trans_id, member_id, shares, amount, extra_expense, net_cash, cost_adjust, realized_profit, additional_deposit)
         VALUES
-        (?, ?, ?, ?, ?, ?, '0', ?, ?, '0', ?)
+        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
       ).run(
         id(),
@@ -907,9 +803,10 @@ export const executeBuy = (request: BuyRequest): void => {
         participant.memberId,
         buyShares.toString(),
         investAmount.toString(),
-        commission.toString(),
+        extraExpense.toString(),
         `-${investAmount.toString()}`,
         actualBuyValue.toString(),
+        roundAmount(D(0).minus(extraExpense)).toString(),
         deposits[index].toString(),
       );
     });
@@ -926,9 +823,7 @@ export const executeBuy = (request: BuyRequest): void => {
     price: price.toString(),
     totalShares: totalShares.toString(),
     totalInvest: totalInvest.toString(),
-    totalCommission: commissionActual.toString(),
-    commissionRate: config.commissionRate,
-    minCommission: config.minCommission,
+    totalExtraExpense: totalExtraExpense.toString(),
     totalDeposit: totalDeposit.toString(),
     participantCount: participantLogs.length,
     participants: participantLogs,
@@ -964,9 +859,16 @@ const validateSellParticipants = (
   });
 };
 
+const parseManualTotalFee = (value: string): DecimalJs => {
+  const fee = roundAmount(value);
+  if (fee.lessThan(0)) {
+    throw new Error('本笔总费用不能小于 0');
+  }
+  return fee;
+};
+
 export const executeSell = (request: SellRequest): void => {
   const db = getDatabase();
-  const config = getTradingConfig();
   const price = roundPrice(request.price);
   if (!isPositive(price)) {
     throw new Error('卖出价格必须大于 0');
@@ -977,8 +879,7 @@ export const executeSell = (request: SellRequest): void => {
   const participantLogs: Array<Record<string, string>> = [];
   let totalShares = D(0);
   let totalSellAmount = D(0);
-  let totalTax = D(0);
-  let commissionActual = D(0);
+  let totalExtraExpense = D(0);
   let accountSnapshot: PublicAccountSnapshot | null = null;
 
   const tx = db.transaction(() => {
@@ -988,18 +889,21 @@ export const executeSell = (request: SellRequest): void => {
     );
     const grossAmounts = participants.map((participant) => roundAmount(participant.shares.times(price)));
     totalSellAmount = roundAmount(grossAmounts.reduce((acc, amount) => acc.plus(amount), D(0)));
-    const commissionRaw = roundAmount(totalSellAmount.times(config.commissionRate));
-    commissionActual = roundAmount(DecimalJs.max(commissionRaw, D(config.minCommission)));
-    totalTax = roundAmount(totalSellAmount.times(config.stampTaxRate));
-    const commissions = allocateRoundedByWeights(commissionActual, grossAmounts, roundAmount);
-    const taxes = allocateRoundedByWeights(totalTax, grossAmounts, roundAmount);
+
+    const totalFeeAmount = parseManualTotalFee(request.totalFeeAmount);
+    if (totalFeeAmount.greaterThan(totalSellAmount)) {
+      throw new Error('卖出总费用不能大于总成交金额');
+    }
+
+    totalExtraExpense = totalFeeAmount;
+    const individualExpenses = allocateRoundedByWeights(totalExtraExpense, grossAmounts, roundAmount);
 
     db.prepare(
       `
       INSERT INTO transactions
-      (id, trans_time, type, price, total_shares, total_amount, total_commission, total_tax, status)
+      (id, trans_time, type, price, total_shares, total_amount, total_extra_expense, status)
       VALUES
-      (?, ?, 'sell', ?, ?, ?, ?, ?, 'confirmed')
+      (?, ?, 'sell', ?, ?, ?, ?, 'confirmed')
       `,
     ).run(
       transId,
@@ -1007,15 +911,13 @@ export const executeSell = (request: SellRequest): void => {
       price.toString(),
       totalShares.toString(),
       totalSellAmount.toString(),
-      commissionActual.toString(),
-      totalTax.toString(),
+      totalExtraExpense.toString(),
     );
 
     participants.forEach((participant, index) => {
       const gross = grossAmounts[index];
-      const commission = commissions[index];
-      const tax = taxes[index];
-      const netCash = roundAmount(gross.minus(commission).minus(tax));
+      const extraExpense = individualExpenses[index];
+      const netCash = roundAmount(gross.minus(extraExpense));
 
       const prevShares = D(participant.ledger.shares);
       const prevCash = D(participant.ledger.cash);
@@ -1042,8 +944,7 @@ export const executeSell = (request: SellRequest): void => {
         memberId: participant.memberId,
         shares: participant.shares.toString(),
         grossAmount: gross.toString(),
-        commission: commission.toString(),
-        tax: tax.toString(),
+        extraExpense: extraExpense.toString(),
         netCash: netCash.toString(),
         soldCost: soldCost.toString(),
         realizedProfit: realizedProfit.toString(),
@@ -1061,9 +962,9 @@ export const executeSell = (request: SellRequest): void => {
       db.prepare(
         `
         INSERT INTO transaction_details
-        (id, trans_id, member_id, shares, amount, commission, tax, net_cash, cost_adjust, realized_profit)
+        (id, trans_id, member_id, shares, amount, extra_expense, net_cash, cost_adjust, realized_profit)
         VALUES
-        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
       ).run(
         id(),
@@ -1071,8 +972,7 @@ export const executeSell = (request: SellRequest): void => {
         participant.memberId,
         roundShares(D(0).minus(participant.shares)).toString(),
         gross.toString(),
-        commission.toString(),
-        tax.toString(),
+        extraExpense.toString(),
         netCash.toString(),
         roundAmount(D(0).minus(soldCost)).toString(),
         realizedProfit.toString(),
@@ -1102,11 +1002,7 @@ export const executeSell = (request: SellRequest): void => {
     price: price.toString(),
     totalShares: totalShares.toString(),
     totalAmount: totalSellAmount.toString(),
-    totalCommission: commissionActual.toString(),
-    totalTax: totalTax.toString(),
-    commissionRate: config.commissionRate,
-    minCommission: config.minCommission,
-    stampTaxRate: config.stampTaxRate,
+    totalExtraExpense: totalExtraExpense.toString(),
     participantCount: participantLogs.length,
     participants: participantLogs,
     publicAccount: accountSnapshot,
@@ -1149,9 +1045,9 @@ export const executeDividend = (request: DividendRequest): void => {
     db.prepare(
       `
       INSERT INTO transactions
-      (id, trans_time, type, price, total_shares, total_amount, total_commission, total_tax, status)
+      (id, trans_time, type, price, total_shares, total_amount, total_extra_expense, status)
       VALUES
-      (?, ?, 'dividend', ?, ?, ?, '0', '0', 'confirmed')
+      (?, ?, 'dividend', ?, ?, ?, '0', 'confirmed')
       `,
     ).run(
       transId,
@@ -1177,9 +1073,9 @@ export const executeDividend = (request: DividendRequest): void => {
       db.prepare(
         `
         INSERT INTO transaction_details
-        (id, trans_id, member_id, shares, amount, commission, tax, net_cash, cost_adjust, realized_profit)
+        (id, trans_id, member_id, shares, amount, extra_expense, net_cash, cost_adjust, realized_profit)
         VALUES
-        (?, ?, ?, '0', ?, '0', '0', ?, '0', '0')
+        (?, ?, ?, '0', ?, '0', ?, '0', '0')
         `,
       ).run(id(), transId, memberId, amount.toString(), amount.toString());
 
@@ -1225,7 +1121,7 @@ export const reverseTransaction = (request: ReverseTransactionRequest): void => 
     const original = db
       .prepare(
         `
-        SELECT id, trans_time, type, price, total_shares, total_amount, total_commission, total_tax, status
+        SELECT id, trans_time, type, price, total_shares, total_amount, total_extra_expense, status
         FROM transactions
         WHERE id = ?
         LIMIT 1
@@ -1239,8 +1135,7 @@ export const reverseTransaction = (request: ReverseTransactionRequest): void => 
         price: string;
         total_shares: string;
         total_amount: string;
-        total_commission: string;
-        total_tax: string;
+        total_extra_expense: string;
         status: 'confirmed' | 'reversed';
       }
       | undefined;
@@ -1260,7 +1155,7 @@ export const reverseTransaction = (request: ReverseTransactionRequest): void => 
     const originalDetails = db
       .prepare(
         `
-        SELECT id, trans_id, member_id, shares, amount, commission, tax, net_cash, cost_adjust, realized_profit
+        SELECT id, trans_id, member_id, shares, amount, extra_expense, net_cash, cost_adjust, realized_profit
         FROM transaction_details
         WHERE trans_id = ?
         ORDER BY created_at ASC
@@ -1272,8 +1167,7 @@ export const reverseTransaction = (request: ReverseTransactionRequest): void => 
       member_id: string;
       shares: string;
       amount: string;
-      commission: string;
-      tax: string;
+      extra_expense: string;
       net_cash: string;
       cost_adjust: string;
       realized_profit: string;
@@ -1289,16 +1183,15 @@ export const reverseTransaction = (request: ReverseTransactionRequest): void => 
       transTime: original.trans_time,
       transType: original.type,
       totalAmount: original.total_amount,
-      totalCommission: original.total_commission,
-      totalTax: original.total_tax,
+      totalExtraExpense: original.total_extra_expense,
     };
 
     db.prepare(
       `
       INSERT INTO transactions
-      (id, trans_time, type, price, total_shares, total_amount, total_commission, total_tax, status)
+      (id, trans_time, type, price, total_shares, total_amount, total_extra_expense, status)
       VALUES
-      (?, ?, 'reversal', ?, ?, ?, ?, ?, 'confirmed')
+      (?, ?, 'reversal', ?, ?, ?, ?, 'confirmed')
       `,
     ).run(
       reversalId,
@@ -1306,8 +1199,7 @@ export const reverseTransaction = (request: ReverseTransactionRequest): void => 
       original.price,
       roundShares(D(0).minus(original.total_shares)).toString(),
       roundAmount(D(0).minus(original.total_amount)).toString(),
-      roundAmount(D(0).minus(original.total_commission)).toString(),
-      roundAmount(D(0).minus(original.total_tax)).toString(),
+      roundAmount(D(0).minus(original.total_extra_expense)).toString(),
     );
 
     originalDetails.forEach((detail) => {
@@ -1315,8 +1207,7 @@ export const reverseTransaction = (request: ReverseTransactionRequest): void => 
 
       const reverseShares = roundShares(D(0).minus(detail.shares));
       const reverseAmount = roundAmount(D(0).minus(detail.amount));
-      const reverseCommission = roundAmount(D(0).minus(detail.commission));
-      const reverseTax = roundAmount(D(0).minus(detail.tax));
+      const reverseExtraExpense = roundAmount(D(0).minus(detail.extra_expense));
       const reverseNetCash = roundAmount(D(0).minus(detail.net_cash));
       const reverseCostAdjust = roundAmount(D(0).minus(detail.cost_adjust));
       const reverseRealizedProfit = roundAmount(D(0).minus(detail.realized_profit));
@@ -1344,8 +1235,7 @@ export const reverseTransaction = (request: ReverseTransactionRequest): void => 
         memberId: detail.member_id,
         reverseShares: reverseShares.toString(),
         reverseAmount: reverseAmount.toString(),
-        reverseCommission: reverseCommission.toString(),
-        reverseTax: reverseTax.toString(),
+        reverseExtraExpense: reverseExtraExpense.toString(),
         reverseNetCash: reverseNetCash.toString(),
         reverseCostAdjust: reverseCostAdjust.toString(),
         reverseRealizedProfit: reverseRealizedProfit.toString(),
@@ -1359,9 +1249,9 @@ export const reverseTransaction = (request: ReverseTransactionRequest): void => 
       db.prepare(
         `
         INSERT INTO transaction_details
-        (id, trans_id, member_id, shares, amount, commission, tax, net_cash, cost_adjust, realized_profit)
+        (id, trans_id, member_id, shares, amount, extra_expense, net_cash, cost_adjust, realized_profit)
         VALUES
-        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
       ).run(
         id(),
@@ -1369,8 +1259,7 @@ export const reverseTransaction = (request: ReverseTransactionRequest): void => 
         detail.member_id,
         reverseShares.toString(),
         reverseAmount.toString(),
-        reverseCommission.toString(),
-        reverseTax.toString(),
+        reverseExtraExpense.toString(),
         reverseNetCash.toString(),
         reverseCostAdjust.toString(),
         reverseRealizedProfit.toString(),
@@ -1434,9 +1323,9 @@ export const executeWithdrawCash = (request: WithdrawCashRequest): void => {
     db.prepare(
       `
       INSERT INTO transactions
-      (id, trans_time, type, price, total_shares, total_amount, total_commission, total_tax, status)
+      (id, trans_time, type, price, total_shares, total_amount, total_extra_expense, status)
       VALUES
-      (?, ?, 'withdrawal', '0', '0', ?, '0', '0', 'confirmed')
+      (?, ?, 'withdrawal', '0', '0', ?, '0', 'confirmed')
       `,
     ).run(transId, transTime, withdrawAmount.toString());
 
@@ -1447,9 +1336,9 @@ export const executeWithdrawCash = (request: WithdrawCashRequest): void => {
     db.prepare(
       `
       INSERT INTO transaction_details
-      (id, trans_id, member_id, shares, amount, commission, tax, net_cash, cost_adjust, realized_profit, additional_deposit)
+      (id, trans_id, member_id, shares, amount, extra_expense, net_cash, cost_adjust, realized_profit, additional_deposit)
       VALUES
-      (?, ?, ?, '0', ?, '0', '0', ?, '0', '0', '0')
+      (?, ?, ?, '0', ?, '0', ?, '0', '0', '0')
       `,
     ).run(
       id(),
@@ -1527,9 +1416,9 @@ export const executeStockBonus = (request: StockBonusRequest): void => {
     db.prepare(
       `
       INSERT INTO transactions
-      (id, trans_time, type, price, total_shares, total_amount, total_commission, total_tax, status)
+      (id, trans_time, type, price, total_shares, total_amount, total_extra_expense, status)
       VALUES
-      (?, ?, 'stock_bonus', ?, ?, '0', '0', '0', 'confirmed')
+      (?, ?, 'stock_bonus', ?, ?, '0', '0', 'confirmed')
       `,
     ).run(
       transId,
@@ -1561,9 +1450,9 @@ export const executeStockBonus = (request: StockBonusRequest): void => {
       db.prepare(
         `
         INSERT INTO transaction_details
-        (id, trans_id, member_id, shares, amount, commission, tax, net_cash, cost_adjust, realized_profit, additional_deposit)
+        (id, trans_id, member_id, shares, amount, extra_expense, net_cash, cost_adjust, realized_profit, additional_deposit)
         VALUES
-        (?, ?, ?, ?, '0', '0', '0', '0', '0', '0', '0')
+        (?, ?, ?, ?, '0', '0', '0', '0', '0', '0')
         `,
       ).run(id(), transId, memberId, bonusShares.toString());
 
@@ -1616,6 +1505,7 @@ export const executeMemberExit = (request: ExitMemberRequest): void => {
     executeSell({
       transTime: exitTime,
       price: exitPrice.toString(),
+      totalFeeAmount: request.totalFeeAmount,
       participants: [{
         memberId,
         shares: initialLedger.shares,

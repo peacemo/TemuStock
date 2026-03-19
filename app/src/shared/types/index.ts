@@ -35,25 +35,15 @@ export interface SellParticipantInput {
 export interface BuyRequest {
   transTime: string;
   price: string;
+  totalFeeAmount: string;
   participants: BuyParticipantInput[];
 }
 
 export interface SellRequest {
   transTime: string;
   price: string;
+  totalFeeAmount: string;
   participants: SellParticipantInput[];
-}
-
-export interface TradingConfig {
-  commissionRate: string;
-  minCommission: string;
-  stampTaxRate: string;
-}
-
-export interface UpdateTradingConfigRequest {
-  commissionRate: string;
-  minCommission: string;
-  stampTaxRate: string;
 }
 
 export interface DividendRequest {
@@ -80,8 +70,7 @@ export interface TransactionRecord {
   price: string;
   totalShares: string;
   totalAmount: string;
-  totalCommission: string;
-  totalTax: string;
+  totalExtraExpense: string;
   status: 'confirmed' | 'reversed';
 }
 
@@ -92,8 +81,7 @@ export interface TransactionDetailRecord {
   memberName: string;
   shares: string;
   amount: string;
-  commission: string;
-  tax: string;
+  extraExpense: string;
   netCash: string;
   costAdjust: string;
   realizedProfit: string;
@@ -129,6 +117,7 @@ export interface ExitMemberRequest {
   memberId: string;
   exitPrice: string;
   transTime: string;
+  totalFeeAmount: string;
 }
 
 export interface ReplayValidationFailure {

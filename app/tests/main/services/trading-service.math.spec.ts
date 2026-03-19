@@ -13,10 +13,9 @@ import {
   executeMemberExit,
   executeSell,
   executeStockBonus,
-  getTradingConfig,
   getLatestPublicAccount,
   listMembersWithLatestLedger,
-  updateTradingConfig,
+  reverseTransaction,
 } from '../../../src/main/services/trading-service';
 import { D } from '../../../src/shared/utils/decimal';
 
@@ -57,7 +56,7 @@ describe.sequential('trading-service core math logic', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('calculates buy allocations with minimum commission and auto-deposit correctly', () => {
+  it('calculates buy allocations with extra expense and auto-deposit correctly', () => {
     const a = createMember({
       name: 'A',
       joinDate: '2026-03-18T09:00:00.000Z',
@@ -72,6 +71,7 @@ describe.sequential('trading-service core math logic', () => {
     executeBuy({
       transTime: '2026-03-18T10:00:00.000Z',
       price: '10',
+      totalFeeAmount: '5',
       participants: [
         { memberId: a.id, shares: '100' },
         { memberId: b.id, shares: '200' },
@@ -88,11 +88,13 @@ describe.sequential('trading-service core math logic', () => {
     assertDecimalEqual(ledgerA!.shares, '100');
     assertDecimalEqual(ledgerA!.cost, '1000');
     assertDecimalEqual(ledgerA!.avgPrice, '10');
+    assertDecimalEqual(ledgerA!.realizedProfit, '-1.67');
 
     assertDecimalEqual(ledgerB!.cash, '0');
     assertDecimalEqual(ledgerB!.shares, '200');
     assertDecimalEqual(ledgerB!.cost, '2000');
     assertDecimalEqual(ledgerB!.avgPrice, '10');
+    assertDecimalEqual(ledgerB!.realizedProfit, '-3.33');
 
     const account = getLatestPublicAccount();
     expect(account).not.toBeNull();
@@ -102,20 +104,20 @@ describe.sequential('trading-service core math logic', () => {
     const tx = getDatabase()
       .prepare(
         `
-        SELECT total_amount, total_commission
+        SELECT total_amount, total_extra_expense
         FROM transactions
         WHERE type = 'buy'
         ORDER BY created_at DESC
         LIMIT 1
         `,
       )
-      .get() as { total_amount: string; total_commission: string };
+      .get() as { total_amount: string; total_extra_expense: string };
 
     assertDecimalEqual(tx.total_amount, '3005');
-    assertDecimalEqual(tx.total_commission, '5');
+    assertDecimalEqual(tx.total_extra_expense, '5');
   });
 
-  it('calculates sell tax, commission, and realized profit correctly', () => {
+  it('calculates sell extra expense and realized profit correctly', () => {
     const a = createMember({
       name: 'A',
       joinDate: '2026-03-18T09:00:00.000Z',
@@ -130,6 +132,7 @@ describe.sequential('trading-service core math logic', () => {
     executeBuy({
       transTime: '2026-03-18T10:00:00.000Z',
       price: '10',
+      totalFeeAmount: '5',
       participants: [
         { memberId: a.id, shares: '100' },
         { memberId: b.id, shares: '200' },
@@ -139,6 +142,7 @@ describe.sequential('trading-service core math logic', () => {
     executeSell({
       transTime: '2026-03-18T11:00:00.000Z',
       price: '12',
+      totalFeeAmount: '6.68',
       participants: [
         { memberId: a.id, shares: '40' },
         { memberId: b.id, shares: '100' },
@@ -155,13 +159,13 @@ describe.sequential('trading-service core math logic', () => {
     assertDecimalEqual(ledgerA!.shares, '60');
     assertDecimalEqual(ledgerA!.cost, '600');
     assertDecimalEqual(ledgerA!.avgPrice, '10');
-    assertDecimalEqual(ledgerA!.realizedProfit, '78.09');
+    assertDecimalEqual(ledgerA!.realizedProfit, '76.42');
 
     assertDecimalEqual(ledgerB!.cash, '1195.23');
     assertDecimalEqual(ledgerB!.shares, '100');
     assertDecimalEqual(ledgerB!.cost, '1000');
     assertDecimalEqual(ledgerB!.avgPrice, '10');
-    assertDecimalEqual(ledgerB!.realizedProfit, '195.23');
+    assertDecimalEqual(ledgerB!.realizedProfit, '191.9');
 
     const account = getLatestPublicAccount();
     expect(account).not.toBeNull();
@@ -171,18 +175,17 @@ describe.sequential('trading-service core math logic', () => {
     const tx = getDatabase()
       .prepare(
         `
-        SELECT total_amount, total_commission, total_tax
+        SELECT total_amount, total_extra_expense
         FROM transactions
         WHERE type = 'sell'
         ORDER BY created_at DESC
         LIMIT 1
         `,
       )
-      .get() as { total_amount: string; total_commission: string; total_tax: string };
+      .get() as { total_amount: string; total_extra_expense: string };
 
     assertDecimalEqual(tx.total_amount, '1680');
-    assertDecimalEqual(tx.total_commission, '5');
-    assertDecimalEqual(tx.total_tax, '1.68');
+    assertDecimalEqual(tx.total_extra_expense, '6.68');
   });
 
   it('keeps cost invariant through dividend and stock bonus with expected rounding', () => {
@@ -200,6 +203,7 @@ describe.sequential('trading-service core math logic', () => {
     executeBuy({
       transTime: '2026-03-18T10:00:00.000Z',
       price: '10',
+      totalFeeAmount: '5',
       participants: [
         { memberId: a.id, shares: '100' },
         { memberId: b.id, shares: '200' },
@@ -209,6 +213,7 @@ describe.sequential('trading-service core math logic', () => {
     executeSell({
       transTime: '2026-03-18T11:00:00.000Z',
       price: '12',
+      totalFeeAmount: '6.68',
       participants: [
         { memberId: a.id, shares: '40' },
         { memberId: b.id, shares: '100' },
@@ -262,6 +267,7 @@ describe.sequential('trading-service core math logic', () => {
     executeBuy({
       transTime: '2026-03-18T10:00:00.000Z',
       price: '10',
+      totalFeeAmount: '5',
       participants: [
         { memberId: a.id, shares: '100' },
         { memberId: b.id, shares: '200' },
@@ -271,6 +277,7 @@ describe.sequential('trading-service core math logic', () => {
     executeSell({
       transTime: '2026-03-18T11:00:00.000Z',
       price: '12',
+      totalFeeAmount: '6.68',
       participants: [
         { memberId: a.id, shares: '40' },
         { memberId: b.id, shares: '100' },
@@ -291,6 +298,7 @@ describe.sequential('trading-service core math logic', () => {
       memberId: a.id,
       exitPrice: '11',
       transTime: '2026-03-18T14:00:00.000Z',
+      totalFeeAmount: '5.73',
     });
 
     const members = listMembersWithLatestLedger();
@@ -326,18 +334,7 @@ describe.sequential('trading-service core math logic', () => {
     assertDecimalEqual(totals.shares.toString(), account!.totalShares);
   });
 
-  it('applies updated trading config to subsequent buy and sell transactions', () => {
-    updateTradingConfig({
-      commissionRate: '0.001',
-      minCommission: '8',
-      stampTaxRate: '0.002',
-    });
-
-    const config = getTradingConfig();
-    expect(config.commissionRate).toBe('0.001');
-    expect(config.minCommission).toBe('8');
-    expect(config.stampTaxRate).toBe('0.002');
-
+  it('persists manual extra expense values in buy and sell transactions', () => {
     const a = createMember({
       name: 'A',
       joinDate: '2026-03-18T09:00:00.000Z',
@@ -352,6 +349,7 @@ describe.sequential('trading-service core math logic', () => {
     executeBuy({
       transTime: '2026-03-18T10:00:00.000Z',
       price: '10',
+      totalFeeAmount: '8',
       participants: [
         { memberId: a.id, shares: '100' },
         { memberId: b.id, shares: '200' },
@@ -361,6 +359,7 @@ describe.sequential('trading-service core math logic', () => {
     executeSell({
       transTime: '2026-03-18T11:00:00.000Z',
       price: '12',
+      totalFeeAmount: '11.36',
       participants: [
         { memberId: a.id, shares: '40' },
         { memberId: b.id, shares: '100' },
@@ -370,32 +369,95 @@ describe.sequential('trading-service core math logic', () => {
     const buyTx = getDatabase()
       .prepare(
         `
-        SELECT total_amount, total_commission
+        SELECT total_amount, total_extra_expense
         FROM transactions
         WHERE type = 'buy'
         ORDER BY created_at DESC
         LIMIT 1
         `,
       )
-      .get() as { total_amount: string; total_commission: string };
+      .get() as { total_amount: string; total_extra_expense: string };
 
     assertDecimalEqual(buyTx.total_amount, '3008');
-    assertDecimalEqual(buyTx.total_commission, '8');
+    assertDecimalEqual(buyTx.total_extra_expense, '8');
 
     const sellTx = getDatabase()
       .prepare(
         `
-        SELECT total_amount, total_commission, total_tax
+        SELECT total_amount, total_extra_expense
         FROM transactions
         WHERE type = 'sell'
         ORDER BY created_at DESC
         LIMIT 1
         `,
       )
-      .get() as { total_amount: string; total_commission: string; total_tax: string };
+      .get() as { total_amount: string; total_extra_expense: string };
 
     assertDecimalEqual(sellTx.total_amount, '1680');
-    assertDecimalEqual(sellTx.total_commission, '8');
-    assertDecimalEqual(sellTx.total_tax, '3.36');
+    assertDecimalEqual(sellTx.total_extra_expense, '11.36');
+  });
+
+  it('restores realized profit after reversing a buy transaction', () => {
+    const a = createMember({
+      name: 'A',
+      joinDate: '2026-03-18T09:00:00.000Z',
+      initialCash: '0',
+    });
+    const b = createMember({
+      name: 'B',
+      joinDate: '2026-03-18T09:00:01.000Z',
+      initialCash: '0',
+    });
+
+    executeBuy({
+      transTime: '2026-03-18T10:00:00.000Z',
+      price: '10',
+      totalFeeAmount: '5',
+      participants: [
+        { memberId: a.id, shares: '100' },
+        { memberId: b.id, shares: '200' },
+      ],
+    });
+
+    const beforeReverse = listMembersWithLatestLedger();
+    const beforeA = beforeReverse.find((m) => m.id === a.id)?.ledger;
+    const beforeB = beforeReverse.find((m) => m.id === b.id)?.ledger;
+    expect(beforeA).toBeDefined();
+    expect(beforeB).toBeDefined();
+    assertDecimalEqual(beforeA!.realizedProfit, '-1.67');
+    assertDecimalEqual(beforeB!.realizedProfit, '-3.33');
+
+    const buyTx = getDatabase()
+      .prepare(
+        `
+        SELECT id
+        FROM transactions
+        WHERE type = 'buy'
+        ORDER BY created_at DESC
+        LIMIT 1
+        `,
+      )
+      .get() as { id: string };
+
+    reverseTransaction({
+      transId: buyTx.id,
+      reverseTime: '2026-03-18T10:30:00.000Z',
+    });
+
+    const afterReverse = listMembersWithLatestLedger();
+    const afterA = afterReverse.find((m) => m.id === a.id)?.ledger;
+    const afterB = afterReverse.find((m) => m.id === b.id)?.ledger;
+    expect(afterA).toBeDefined();
+    expect(afterB).toBeDefined();
+
+    assertDecimalEqual(afterA!.cash, '1001.67');
+    assertDecimalEqual(afterA!.shares, '0');
+    assertDecimalEqual(afterA!.cost, '0');
+    assertDecimalEqual(afterA!.realizedProfit, '0');
+
+    assertDecimalEqual(afterB!.cash, '2003.33');
+    assertDecimalEqual(afterB!.shares, '0');
+    assertDecimalEqual(afterB!.cost, '0');
+    assertDecimalEqual(afterB!.realizedProfit, '0');
   });
 });
