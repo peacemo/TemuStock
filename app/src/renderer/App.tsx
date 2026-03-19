@@ -97,20 +97,6 @@ export const App = () => {
       return;
     }
 
-    setBuyParticipants((previous) => {
-      if (previous.length > 0) {
-        return previous;
-      }
-      return [{ memberId: activeMembers[0].id, shares: '100' }];
-    });
-
-    setSellParticipants((previous) => {
-      if (previous.length > 0) {
-        return previous;
-      }
-      return [{ memberId: activeMembers[0].id, shares: '10' }];
-    });
-
     setWithdrawMemberId((previous) => previous || activeMembers[0].id);
     setExitMemberId((previous) => previous || activeMembers[0].id);
   }, [activeMembers]);
@@ -210,6 +196,7 @@ export const App = () => {
         }
 
         setMessage('买入成功');
+        setBuyParticipants([]);
         await refresh();
       },
     });
@@ -298,6 +285,7 @@ export const App = () => {
         }
 
         setMessage('卖出成功');
+        setSellParticipants([]);
         await refresh();
       },
     });
