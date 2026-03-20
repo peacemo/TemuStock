@@ -45,7 +45,7 @@ const config: ForgeConfig = {
     }),
   ],
   plugins: [
-    new AutoUnpackNativesPlugin(),
+    new AutoUnpackNativesPlugin({}),
     new VitePlugin({
       // `build` can specify multiple entry builds, which can be Main process, Preload scripts, Worker process, etc.
       // If you are familiar with Vite configuration, it will look really familiar.
