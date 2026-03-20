@@ -766,7 +766,7 @@ export const executeBuy = (request: BuyRequest): void => {
       const investAmount = individualInvests[index];
       const extraExpense = individualExpenses[index];
       const buyShares = participant.shares;
-      const actualBuyValue = roundAmount(investAmount.minus(extraExpense));
+      const actualBuyValue = investAmount;
 
       const ledger = getLatestLedgerByMember(db, participant.memberId);
       const previousShares = D(ledger.shares);
@@ -777,7 +777,7 @@ export const executeBuy = (request: BuyRequest): void => {
       const nextShares = roundShares(previousShares.plus(buyShares));
       const nextCost = roundAmount(previousCost.plus(actualBuyValue));
       const nextCash = roundAmount(previousCash.minus(investAmount));
-      const nextRealizedProfit = roundAmount(previousRealizedProfit.minus(extraExpense));
+      const nextRealizedProfit = previousRealizedProfit;
       const avgPrice = nextShares.greaterThan(0)
         ? roundAvgPrice(nextCost.div(nextShares))
         : D(0);
@@ -827,7 +827,7 @@ export const executeBuy = (request: BuyRequest): void => {
         extraExpense.toString(),
         `-${investAmount.toString()}`,
         actualBuyValue.toString(),
-        roundAmount(D(0).minus(extraExpense)).toString(),
+        D(0).toString(),
         deposits[index].toString(),
       );
     });

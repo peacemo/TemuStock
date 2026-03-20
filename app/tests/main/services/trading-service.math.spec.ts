@@ -87,15 +87,15 @@ describe.sequential('trading-service core math logic', () => {
 
     assertDecimalEqual(ledgerA!.cash, '0');
     assertDecimalEqual(ledgerA!.shares, '100');
-    assertDecimalEqual(ledgerA!.cost, '1000');
-    assertDecimalEqual(ledgerA!.avgPrice, '10');
-    assertDecimalEqual(ledgerA!.realizedProfit, '-1.67');
+    assertDecimalEqual(ledgerA!.cost, '1001.67');
+    assertDecimalEqual(ledgerA!.avgPrice, '10.0167');
+    assertDecimalEqual(ledgerA!.realizedProfit, '0');
 
     assertDecimalEqual(ledgerB!.cash, '0');
     assertDecimalEqual(ledgerB!.shares, '200');
-    assertDecimalEqual(ledgerB!.cost, '2000');
-    assertDecimalEqual(ledgerB!.avgPrice, '10');
-    assertDecimalEqual(ledgerB!.realizedProfit, '-3.33');
+    assertDecimalEqual(ledgerB!.cost, '2003.33');
+    assertDecimalEqual(ledgerB!.avgPrice, '10.0167');
+    assertDecimalEqual(ledgerB!.realizedProfit, '0');
 
     const account = getLatestPublicAccount();
     expect(account).not.toBeNull();
@@ -177,15 +177,15 @@ describe.sequential('trading-service core math logic', () => {
 
     assertDecimalEqual(ledgerA!.cash, '478.09');
     assertDecimalEqual(ledgerA!.shares, '60');
-    assertDecimalEqual(ledgerA!.cost, '600');
-    assertDecimalEqual(ledgerA!.avgPrice, '10');
-    assertDecimalEqual(ledgerA!.realizedProfit, '76.42');
+    assertDecimalEqual(ledgerA!.cost, '601');
+    assertDecimalEqual(ledgerA!.avgPrice, '10.0167');
+    assertDecimalEqual(ledgerA!.realizedProfit, '77.42');
 
     assertDecimalEqual(ledgerB!.cash, '1195.23');
     assertDecimalEqual(ledgerB!.shares, '100');
-    assertDecimalEqual(ledgerB!.cost, '1000');
-    assertDecimalEqual(ledgerB!.avgPrice, '10');
-    assertDecimalEqual(ledgerB!.realizedProfit, '191.9');
+    assertDecimalEqual(ledgerB!.cost, '1001.66');
+    assertDecimalEqual(ledgerB!.avgPrice, '10.0167');
+    assertDecimalEqual(ledgerB!.realizedProfit, '193.56');
 
     const account = getLatestPublicAccount();
     expect(account).not.toBeNull();
@@ -258,13 +258,13 @@ describe.sequential('trading-service core math logic', () => {
 
     assertDecimalEqual(ledgerA!.cash, '508.09');
     assertDecimalEqual(ledgerA!.shares, '66');
-    assertDecimalEqual(ledgerA!.cost, '600');
-    assertDecimalEqual(ledgerA!.avgPrice, '9.0909');
+    assertDecimalEqual(ledgerA!.cost, '601');
+    assertDecimalEqual(ledgerA!.avgPrice, '9.1061');
 
     assertDecimalEqual(ledgerB!.cash, '1245.23');
     assertDecimalEqual(ledgerB!.shares, '110');
-    assertDecimalEqual(ledgerB!.cost, '1000');
-    assertDecimalEqual(ledgerB!.avgPrice, '9.0909');
+    assertDecimalEqual(ledgerB!.cost, '1001.66');
+    assertDecimalEqual(ledgerB!.avgPrice, '9.106');
 
     const account = getLatestPublicAccount();
     expect(account).not.toBeNull();
@@ -335,7 +335,7 @@ describe.sequential('trading-service core math logic', () => {
 
     assertDecimalEqual(ledgerB!.cash, '1245.23');
     assertDecimalEqual(ledgerB!.shares, '110');
-    assertDecimalEqual(ledgerB!.cost, '1000');
+    assertDecimalEqual(ledgerB!.cost, '1001.66');
 
     const account = getLatestPublicAccount();
     expect(account).not.toBeNull();
@@ -444,8 +444,8 @@ describe.sequential('trading-service core math logic', () => {
     const beforeB = beforeReverse.find((m) => m.id === b.id)?.ledger;
     expect(beforeA).toBeDefined();
     expect(beforeB).toBeDefined();
-    assertDecimalEqual(beforeA!.realizedProfit, '-1.67');
-    assertDecimalEqual(beforeB!.realizedProfit, '-3.33');
+    assertDecimalEqual(beforeA!.realizedProfit, '0');
+    assertDecimalEqual(beforeB!.realizedProfit, '0');
 
     const buyTx = getDatabase()
       .prepare(
