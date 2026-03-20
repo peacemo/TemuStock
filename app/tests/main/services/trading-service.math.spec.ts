@@ -16,6 +16,7 @@ import {
   getLatestPublicAccount,
   listMembersWithLatestLedger,
   reverseTransaction,
+  validateReplayConsistency,
 } from '../../../src/main/services/trading-service';
 import { D } from '../../../src/shared/utils/decimal';
 
@@ -115,6 +116,25 @@ describe.sequential('trading-service core math logic', () => {
 
     assertDecimalEqual(tx.total_amount, '3005');
     assertDecimalEqual(tx.total_extra_expense, '5');
+  });
+
+  it('keeps replay validation consistent when auto-deposit and buy share the same timestamp', () => {
+    const member = createMember({
+      name: 'test',
+      joinDate: '2026-03-18T09:00:00.000Z',
+      initialCash: '0',
+    });
+
+    executeBuy({
+      transTime: '2026-03-18T10:00:00.000Z',
+      price: '10',
+      totalFeeAmount: '0',
+      participants: [{ memberId: member.id, shares: '100' }],
+    });
+
+    const replayResult = validateReplayConsistency();
+    expect(replayResult.ok).toBe(true);
+    expect(replayResult.failedSnapshots).toBe(0);
   });
 
   it('calculates sell extra expense and realized profit correctly', () => {

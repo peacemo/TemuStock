@@ -357,16 +357,37 @@ export const validateReplayConsistency = (): ReplayValidationResult => {
   const snapshots = db
     .prepare(
       `
-      SELECT as_of_time, total_cash, total_shares
+      SELECT seq, as_of_time, total_cash, total_shares, event_id
       FROM account_snapshots
       ORDER BY seq ASC
       `,
     )
-    .all() as Array<{ as_of_time: string; total_cash: string; total_shares: string }>;
+    .all() as Array<{
+    seq: number;
+    as_of_time: string;
+    total_cash: string;
+    total_shares: string;
+    event_id: string;
+  }>;
+
+  const latestSnapshotByEvent = new Map<string, {
+    seq: number;
+    as_of_time: string;
+    total_cash: string;
+    total_shares: string;
+    event_id: string;
+  }>();
+
+  snapshots.forEach((snapshot) => {
+    const key = `${snapshot.as_of_time}|${snapshot.event_id}`;
+    latestSnapshotByEvent.set(key, snapshot);
+  });
+
+  const replaySnapshots = [...latestSnapshotByEvent.values()].sort((a, b) => a.seq - b.seq);
 
   const failures: ReplayValidationFailure[] = [];
 
-  snapshots.forEach((snapshot) => {
+  replaySnapshots.forEach((snapshot) => {
     const rows = db
       .prepare(
         `
@@ -405,7 +426,7 @@ export const validateReplayConsistency = (): ReplayValidationResult => {
 
   const result = {
     ok: failures.length === 0,
-    checkedSnapshots: snapshots.length,
+    checkedSnapshots: replaySnapshots.length,
     failedSnapshots: failures.length,
     failures,
   };
