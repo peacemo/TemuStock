@@ -8,9 +8,11 @@ import type {
   ExitMemberRequest,
   HistoricalSnapshot,
   LedgerHistoryQuery,
+  OperationCheckpointRecord,
   PublicAccountSnapshot,
   ReplayValidationResult,
   ReverseTransactionRequest,
+  RestoreCheckpointRequest,
   SellRequest,
   StockBonusRequest,
   TransactionDetailRecord,
@@ -28,9 +30,11 @@ import {
   getHistoricalSnapshot,
   executeSell,
   getLatestPublicAccount,
+  listOperationCheckpoints,
   listMembersWithLatestLedger,
   listTransactionDetails,
   listTransactions,
+  restoreToCheckpoint,
   reverseTransaction,
   validateReplayConsistency,
 } from '../services/trading-service';
@@ -123,5 +127,13 @@ export const registerIpcHandlers = (): void => {
 
   ipcMain.handle(IPC_CHANNELS.validateReplay, async () =>
     wrap<ReplayValidationResult>(() => validateReplayConsistency()),
+  );
+
+  ipcMain.handle(IPC_CHANNELS.listOperationCheckpoints, async () =>
+    wrap<OperationCheckpointRecord[]>(() => listOperationCheckpoints()),
+  );
+
+  ipcMain.handle(IPC_CHANNELS.restoreCheckpoint, async (_event, payload: RestoreCheckpointRequest) =>
+    wrap<OperationCheckpointRecord>(() => restoreToCheckpoint(payload)),
   );
 };

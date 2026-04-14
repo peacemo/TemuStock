@@ -16,10 +16,13 @@ import type {
   LedgerHistoryQuery,
   LedgerSnapshot,
   MemberWithLedger,
+  OperationCheckpointRecord,
+  OperationCheckpointType,
   PublicAccountSnapshot,
   ReplayValidationFailure,
   ReplayValidationResult,
   ReverseTransactionRequest,
+  RestoreCheckpointRequest,
   SellParticipantInput,
   SellRequest,
   StockBonusRequest,
@@ -44,6 +47,17 @@ type MemberRow = {
   name: string;
   join_date: string;
   status: 'active' | 'exited';
+};
+
+type OperationCheckpointRow = {
+  seq: number;
+  checkpoint_id: string;
+  operation_time: string;
+  operation_type: OperationCheckpointType;
+  summary: string;
+  transaction_id: string | null;
+  member_id: string | null;
+  restored_from_checkpoint_id: string | null;
 };
 
 const checksumOf = (value: string): string =>
@@ -268,6 +282,239 @@ const ensureMemberExists = (db: Database, memberId: string): MemberRow => {
     throw new Error(`成员 ${member.name} 状态不是 active`);
   }
   return member;
+};
+
+const toOperationCheckpointRecord = (row: OperationCheckpointRow): OperationCheckpointRecord => ({
+  checkpointId: row.checkpoint_id,
+  checkpointSeq: row.seq,
+  operationTime: row.operation_time,
+  operationType: row.operation_type,
+  summary: row.summary,
+  transactionId: row.transaction_id,
+  memberId: row.member_id,
+  restoredFromCheckpointId: row.restored_from_checkpoint_id,
+});
+
+const captureCheckpoint = (
+  db: Database,
+  input: {
+    operationTime: string;
+    operationType: OperationCheckpointType;
+    summary: string;
+    transactionId?: string | null;
+    memberId?: string | null;
+    restoredFromCheckpointId?: string | null;
+  },
+): OperationCheckpointRecord => {
+  const checkpointId = id();
+  db.prepare(
+    `
+    INSERT INTO operation_checkpoints
+      (checkpoint_id, operation_time, operation_type, summary, transaction_id, member_id, restored_from_checkpoint_id)
+    VALUES
+      (?, ?, ?, ?, ?, ?, ?)
+    `,
+  ).run(
+    checkpointId,
+    input.operationTime,
+    input.operationType,
+    input.summary,
+    input.transactionId ?? null,
+    input.memberId ?? null,
+    input.restoredFromCheckpointId ?? null,
+  );
+
+  db.prepare(
+    `
+    INSERT INTO checkpoint_members (checkpoint_id, id, name, join_date, status)
+    SELECT ?, id, name, join_date, status
+    FROM members
+    ORDER BY join_date ASC
+    `,
+  ).run(checkpointId);
+
+  db.prepare(
+    `
+    INSERT INTO checkpoint_transactions
+      (checkpoint_id, id, trans_time, type, price, total_shares, total_amount, total_extra_expense, status, created_at)
+    SELECT ?, id, trans_time, type, price, total_shares, total_amount, total_extra_expense, status, created_at
+    FROM transactions
+    ORDER BY trans_time ASC, created_at ASC
+    `,
+  ).run(checkpointId);
+
+  db.prepare(
+    `
+    INSERT INTO checkpoint_transaction_details
+      (checkpoint_id, id, trans_id, member_id, shares, amount, extra_expense, net_cash, cost_adjust, realized_profit, additional_deposit, created_at)
+    SELECT ?, id, trans_id, member_id, shares, amount, extra_expense, net_cash, cost_adjust, realized_profit, additional_deposit, created_at
+    FROM transaction_details
+    ORDER BY created_at ASC
+    `,
+  ).run(checkpointId);
+
+  db.prepare(
+    `
+    INSERT INTO checkpoint_ledger_snapshots
+      (checkpoint_id, seq, id, member_id, as_of_time, cash, shares, cost, avg_price, realized_profit, checksum, event_id)
+    SELECT ?, seq, id, member_id, as_of_time, cash, shares, cost, avg_price, realized_profit, checksum, event_id
+    FROM ledger_snapshots
+    ORDER BY seq ASC
+    `,
+  ).run(checkpointId);
+
+  db.prepare(
+    `
+    INSERT INTO checkpoint_account_snapshots
+      (checkpoint_id, seq, id, as_of_time, total_cash, total_shares, checksum, event_id)
+    SELECT ?, seq, id, as_of_time, total_cash, total_shares, checksum, event_id
+    FROM account_snapshots
+    ORDER BY seq ASC
+    `,
+  ).run(checkpointId);
+
+  const row = db
+    .prepare(
+      `
+      SELECT seq, checkpoint_id, operation_time, operation_type, summary, transaction_id, member_id, restored_from_checkpoint_id
+      FROM operation_checkpoints
+      WHERE checkpoint_id = ?
+      LIMIT 1
+      `,
+    )
+    .get(checkpointId) as OperationCheckpointRow;
+
+  return toOperationCheckpointRecord(row);
+};
+
+export const listOperationCheckpoints = (): OperationCheckpointRecord[] => {
+  const db = getDatabase();
+  const rows = db
+    .prepare(
+      `
+      SELECT seq, checkpoint_id, operation_time, operation_type, summary, transaction_id, member_id, restored_from_checkpoint_id
+      FROM operation_checkpoints
+      ORDER BY seq DESC
+      `,
+    )
+    .all() as OperationCheckpointRow[];
+
+  return rows.map(toOperationCheckpointRecord);
+};
+
+export const restoreToCheckpoint = (request: RestoreCheckpointRequest): OperationCheckpointRecord => {
+  const db = getDatabase();
+  const checkpointId = request.checkpointId;
+  const restoreTime = request.restoreTime || nowIso();
+
+  if (!checkpointId) {
+    throw new Error('检查点 ID 不能为空');
+  }
+
+  let targetCheckpoint: OperationCheckpointRecord | null = null;
+  let restoredCheckpoint: OperationCheckpointRecord | null = null;
+
+  const tx = db.transaction(() => {
+    const row = db
+      .prepare(
+        `
+        SELECT seq, checkpoint_id, operation_time, operation_type, summary, transaction_id, member_id, restored_from_checkpoint_id
+        FROM operation_checkpoints
+        WHERE checkpoint_id = ?
+        LIMIT 1
+        `,
+      )
+      .get(checkpointId) as OperationCheckpointRow | undefined;
+
+    if (!row) {
+      throw new Error('目标检查点不存在');
+    }
+
+    targetCheckpoint = toOperationCheckpointRecord(row);
+
+    db.exec(`
+      DELETE FROM transaction_details;
+      DELETE FROM transactions;
+      DELETE FROM ledger_snapshots;
+      DELETE FROM account_snapshots;
+      DELETE FROM members;
+    `);
+
+    db.prepare(
+      `
+      INSERT INTO members (id, name, join_date, status)
+      SELECT id, name, join_date, status
+      FROM checkpoint_members
+      WHERE checkpoint_id = ?
+      ORDER BY join_date ASC
+      `,
+    ).run(checkpointId);
+
+    db.prepare(
+      `
+      INSERT INTO transactions (id, trans_time, type, price, total_shares, total_amount, total_extra_expense, status, created_at)
+      SELECT id, trans_time, type, price, total_shares, total_amount, total_extra_expense, status, created_at
+      FROM checkpoint_transactions
+      WHERE checkpoint_id = ?
+      ORDER BY trans_time ASC, created_at ASC
+      `,
+    ).run(checkpointId);
+
+    db.prepare(
+      `
+      INSERT INTO ledger_snapshots (seq, id, member_id, as_of_time, cash, shares, cost, avg_price, realized_profit, checksum, event_id)
+      SELECT seq, id, member_id, as_of_time, cash, shares, cost, avg_price, realized_profit, checksum, event_id
+      FROM checkpoint_ledger_snapshots
+      WHERE checkpoint_id = ?
+      ORDER BY seq ASC
+      `,
+    ).run(checkpointId);
+
+    db.prepare(
+      `
+      INSERT INTO account_snapshots (seq, id, as_of_time, total_cash, total_shares, checksum, event_id)
+      SELECT seq, id, as_of_time, total_cash, total_shares, checksum, event_id
+      FROM checkpoint_account_snapshots
+      WHERE checkpoint_id = ?
+      ORDER BY seq ASC
+      `,
+    ).run(checkpointId);
+
+    db.prepare(
+      `
+      INSERT INTO transaction_details
+        (id, trans_id, member_id, shares, amount, extra_expense, net_cash, cost_adjust, realized_profit, additional_deposit, created_at)
+      SELECT id, trans_id, member_id, shares, amount, extra_expense, net_cash, cost_adjust, realized_profit, additional_deposit, created_at
+      FROM checkpoint_transaction_details
+      WHERE checkpoint_id = ?
+      ORDER BY created_at ASC
+      `,
+    ).run(checkpointId);
+
+    validateConservation(db);
+
+    restoredCheckpoint = captureCheckpoint(db, {
+      operationTime: restoreTime,
+      operationType: 'checkpoint.restore',
+      summary: `恢复至检查点 #${row.seq}：${row.summary}`,
+      restoredFromCheckpointId: checkpointId,
+    });
+  });
+
+  tx();
+
+  if (!targetCheckpoint || !restoredCheckpoint) {
+    throw new Error('恢复检查点失败');
+  }
+
+  logSettlement('checkpoint.restore', {
+    restoreTime,
+    targetCheckpoint,
+    restoredCheckpoint,
+    publicAccount: getLatestPublicAccount(),
+  });
+
+  return restoredCheckpoint;
 };
 
 export const listMembersWithLatestLedger = (): MemberWithLedger[] => {
@@ -651,6 +898,12 @@ export const createMember = (request: CreateMemberRequest): MemberWithLedger => 
 
     accountSnapshot = insertAccountSnapshot(db, joinDate, id());
     validateConservation(db);
+    captureCheckpoint(db, {
+      operationTime: joinDate,
+      operationType: 'member.create',
+      summary: `创建成员：${request.name.trim()}（初始注资 ${initialCash.toString()}）`,
+      memberId,
+    });
   });
 
   tx();
@@ -834,6 +1087,12 @@ export const executeBuy = (request: BuyRequest): void => {
 
     accountSnapshot = insertAccountSnapshot(db, transTime, transId);
     validateConservation(db);
+    captureCheckpoint(db, {
+      operationTime: transTime,
+      operationType: 'transaction.buy',
+      summary: `买入 ${totalShares.toString()} 股，价格 ${price.toString()}，参与 ${participantLogs.length} 人`,
+      transactionId: transId,
+    });
   });
 
   tx();
@@ -1013,6 +1272,12 @@ export const executeSell = (request: SellRequest): void => {
 
     accountSnapshot = insertAccountSnapshot(db, transTime, transId);
     validateConservation(db);
+    captureCheckpoint(db, {
+      operationTime: transTime,
+      operationType: 'transaction.sell',
+      summary: `卖出 ${totalShares.toString()} 股，价格 ${price.toString()}，参与 ${participantLogs.length} 人`,
+      transactionId: transId,
+    });
   });
 
   tx();
@@ -1114,6 +1379,12 @@ export const executeDividend = (request: DividendRequest): void => {
 
     accountSnapshot = insertAccountSnapshot(db, transTime, transId);
     validateConservation(db);
+    captureCheckpoint(db, {
+      operationTime: transTime,
+      operationType: 'transaction.dividend',
+      summary: `分红：每股 ${perShare.toString()}，总分红 ${totalDividend.toString()}`,
+      transactionId: transId,
+    });
   });
 
   tx();
@@ -1301,6 +1572,12 @@ export const reverseTransaction = (request: ReverseTransactionRequest): void => 
     db.prepare('UPDATE transactions SET status = ? WHERE id = ?').run('reversed', original.id);
     accountSnapshot = insertAccountSnapshot(db, reverseTime, reversalId);
     validateConservation(db);
+    captureCheckpoint(db, {
+      operationTime: reverseTime,
+      operationType: 'transaction.reversal',
+      summary: `冲销交易 ${request.transId.slice(0, 8)}`,
+      transactionId: reversalId,
+    });
   });
 
   tx();
@@ -1382,6 +1659,13 @@ export const executeWithdrawCash = (request: WithdrawCashRequest): void => {
 
     accountSnapshot = insertAccountSnapshot(db, transTime, transId);
     validateConservation(db);
+    captureCheckpoint(db, {
+      operationTime: transTime,
+      operationType: 'transaction.withdrawal',
+      summary: `提现 ${withdrawAmount.toString()}`,
+      transactionId: transId,
+      memberId,
+    });
   });
 
   tx();
@@ -1491,6 +1775,12 @@ export const executeStockBonus = (request: StockBonusRequest): void => {
 
     accountSnapshot = insertAccountSnapshot(db, transTime, transId);
     validateConservation(db);
+    captureCheckpoint(db, {
+      operationTime: transTime,
+      operationType: 'transaction.stock_bonus',
+      summary: `送股比例 ${bonusRatio.toString()}，新增 ${totalBonusShares.toString()} 股`,
+      transactionId: transId,
+    });
   });
 
   tx();
@@ -1518,7 +1808,7 @@ export const executeMemberExit = (request: ExitMemberRequest): void => {
   const memberId = request.memberId;
   const exitTime = request.transTime;
 
-  ensureMemberExists(db, memberId);
+  const member = ensureMemberExists(db, memberId);
   const initialLedger = getLatestLedgerByMember(db, memberId);
 
   // Step A: 卖出全部持股（如有持股）
@@ -1547,6 +1837,12 @@ export const executeMemberExit = (request: ExitMemberRequest): void => {
   // Step C: 标记成员退出
   const tx = db.transaction(() => {
     db.prepare('UPDATE members SET status = ? WHERE id = ?').run('exited', memberId);
+    captureCheckpoint(db, {
+      operationTime: exitTime,
+      operationType: 'member.exit',
+      summary: `成员退出：${member.name}`,
+      memberId,
+    });
   });
 
   tx();

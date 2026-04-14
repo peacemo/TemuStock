@@ -7,9 +7,11 @@ import type {
   HistoricalSnapshot,
   LedgerHistoryQuery,
   MemberWithLedger,
+  OperationCheckpointRecord,
   PublicAccountSnapshot,
   ReplayValidationResult,
   ReverseTransactionRequest,
+  RestoreCheckpointRequest,
   SellRequest,
   StockBonusRequest,
   TransactionDetailRecord,
@@ -32,6 +34,8 @@ type DesktopApi = {
   getPublicAccount: () => Promise<ApiResult<PublicAccountSnapshot | null>>;
   getHistoricalSnapshot: (payload: LedgerHistoryQuery) => Promise<ApiResult<HistoricalSnapshot>>;
   validateReplay: () => Promise<ApiResult<ReplayValidationResult>>;
+  listOperationCheckpoints: () => Promise<ApiResult<OperationCheckpointRecord[]>>;
+  restoreCheckpoint: (payload: RestoreCheckpointRequest) => Promise<ApiResult<OperationCheckpointRecord>>;
 };
 
 declare global {

@@ -1,5 +1,15 @@
 export type MemberStatus = 'active' | 'exited';
 export type TransactionType = 'buy' | 'sell' | 'dividend' | 'reversal' | 'withdrawal' | 'stock_bonus' | 'member_exit';
+export type OperationCheckpointType =
+  | 'member.create'
+  | 'transaction.buy'
+  | 'transaction.sell'
+  | 'transaction.dividend'
+  | 'transaction.reversal'
+  | 'transaction.withdrawal'
+  | 'transaction.stock_bonus'
+  | 'member.exit'
+  | 'checkpoint.restore';
 
 export interface Member {
   id: string;
@@ -133,6 +143,22 @@ export interface ReplayValidationResult {
   checkedSnapshots: number;
   failedSnapshots: number;
   failures: ReplayValidationFailure[];
+}
+
+export interface OperationCheckpointRecord {
+  checkpointId: string;
+  checkpointSeq: number;
+  operationTime: string;
+  operationType: OperationCheckpointType;
+  summary: string;
+  transactionId: string | null;
+  memberId: string | null;
+  restoredFromCheckpointId: string | null;
+}
+
+export interface RestoreCheckpointRequest {
+  checkpointId: string;
+  restoreTime: string;
 }
 
 export interface ApiResult<T> {

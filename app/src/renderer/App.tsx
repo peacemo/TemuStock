@@ -4,6 +4,8 @@ import type {
   BuyParticipantInput,
   HistoricalSnapshot,
   MemberWithLedger,
+  OperationCheckpointRecord,
+  OperationCheckpointType,
   ReplayValidationResult,
   SellParticipantInput,
   TransactionDetailRecord,
@@ -12,10 +14,23 @@ import type {
 
 const nowIsoLocal = (): string => new Date().toISOString();
 
+const CHECKPOINT_TYPE_LABELS: Record<OperationCheckpointType, string> = {
+  'member.create': '创建成员',
+  'transaction.buy': '买入',
+  'transaction.sell': '卖出',
+  'transaction.dividend': '分红',
+  'transaction.reversal': '冲销',
+  'transaction.withdrawal': '提现',
+  'transaction.stock_bonus': '送股',
+  'member.exit': '成员退出',
+  'checkpoint.restore': '恢复',
+};
+
 export const App = () => {
   const [members, setMembers] = useState<MemberWithLedger[]>([]);
   const [transactions, setTransactions] = useState<TransactionRecord[]>([]);
   const [transactionDetails, setTransactionDetails] = useState<TransactionDetailRecord[]>([]);
+  const [operationCheckpoints, setOperationCheckpoints] = useState<OperationCheckpointRecord[]>([]);
   const [publicCash, setPublicCash] = useState('0');
   const [publicShares, setPublicShares] = useState('0');
   const [message, setMessage] = useState('就绪');
@@ -54,13 +69,18 @@ export const App = () => {
     () => members.filter((member) => member.status === 'active'),
     [members],
   );
+  const memberNameMap = useMemo(
+    () => new Map(members.map((member) => [member.id, member.name])),
+    [members],
+  );
 
   const refresh = async () => {
-    const [membersResult, accountResult, transactionsResult, transactionDetailsResult] = await Promise.all([
+    const [membersResult, accountResult, transactionsResult, transactionDetailsResult, checkpointsResult] = await Promise.all([
       window.desktopApi.listMembers(),
       window.desktopApi.getPublicAccount(),
       window.desktopApi.listTransactions(),
       window.desktopApi.listTransactionDetails(),
+      window.desktopApi.listOperationCheckpoints(),
     ]);
 
     if (membersResult.ok && membersResult.data) {
@@ -81,6 +101,10 @@ export const App = () => {
 
     if (transactionDetailsResult.ok && transactionDetailsResult.data) {
       setTransactionDetails(transactionDetailsResult.data);
+    }
+
+    if (checkpointsResult.ok && checkpointsResult.data) {
+      setOperationCheckpoints(checkpointsResult.data);
     }
   };
 
@@ -368,6 +392,36 @@ export const App = () => {
 
     setReplayResult(result.data);
     setMessage(result.data.ok ? '历史重放校验通过' : '历史重放校验发现异常');
+  };
+
+  const promptRestoreCheckpoint = (checkpoint: OperationCheckpointRecord) => {
+    const memberName = checkpoint.memberId ? memberNameMap.get(checkpoint.memberId) ?? checkpoint.memberId : '无';
+    setConfirmDialog({
+      title: '确认恢复至该检查点',
+      lines: [
+        `检查点：#${checkpoint.checkpointSeq}`,
+        `时间：${new Date(checkpoint.operationTime).toLocaleString()}`,
+        `类型：${CHECKPOINT_TYPE_LABELS[checkpoint.operationType]}`,
+        `摘要：${checkpoint.summary}`,
+        `成员：${memberName}`,
+      ],
+      onConfirm: async () => {
+        const result = await window.desktopApi.restoreCheckpoint({
+          checkpointId: checkpoint.checkpointId,
+          restoreTime: nowIsoLocal(),
+        });
+
+        if (!result.ok || !result.data) {
+          setMessage(result.error ?? '恢复检查点失败');
+          return;
+        }
+
+        setHistorySnapshot(null);
+        setReplayResult(null);
+        setMessage(`已恢复至检查点 #${checkpoint.checkpointSeq}`);
+        await refresh();
+      },
+    });
   };
 
   return (
@@ -673,6 +727,43 @@ export const App = () => {
                 <td>{detail.netCash}</td>
                 <td>{detail.costAdjust}</td>
                 <td>{detail.realizedProfit}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </section>
+
+      <section className="card">
+        <h2>检查点日志</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>时间</th>
+              <th>类型</th>
+              <th>摘要</th>
+              <th>关联对象</th>
+              <th>恢复</th>
+            </tr>
+          </thead>
+          <tbody>
+            {operationCheckpoints.map((checkpoint) => (
+              <tr key={checkpoint.checkpointId}>
+                <td>{new Date(checkpoint.operationTime).toLocaleString()}</td>
+                <td>{CHECKPOINT_TYPE_LABELS[checkpoint.operationType]}</td>
+                <td>{checkpoint.summary}</td>
+                <td>
+                  {checkpoint.memberId ? `成员：${memberNameMap.get(checkpoint.memberId) ?? checkpoint.memberId}` : ''}
+                  {checkpoint.memberId && checkpoint.transactionId ? '；' : ''}
+                  {checkpoint.transactionId ? `交易：${checkpoint.transactionId.slice(0, 8)}` : ''}
+                  {!checkpoint.memberId && !checkpoint.transactionId && checkpoint.restoredFromCheckpointId
+                    ? `来源检查点：${checkpoint.restoredFromCheckpointId.slice(0, 8)}`
+                    : ''}
+                </td>
+                <td>
+                  <button type="button" onClick={() => promptRestoreCheckpoint(checkpoint)}>
+                    恢复至此
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>

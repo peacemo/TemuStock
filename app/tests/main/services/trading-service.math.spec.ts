@@ -14,8 +14,11 @@ import {
   executeSell,
   executeStockBonus,
   getLatestPublicAccount,
+  listOperationCheckpoints,
   listMembersWithLatestLedger,
+  listTransactions,
   reverseTransaction,
+  restoreToCheckpoint,
   validateReplayConsistency,
 } from '../../../src/main/services/trading-service';
 import { D } from '../../../src/shared/utils/decimal';
@@ -26,6 +29,12 @@ const assertDecimalEqual = (actual: string, expected: string): void => {
 
 const resetDatabase = (db: Database): void => {
   db.exec(`
+    DELETE FROM checkpoint_transaction_details;
+    DELETE FROM checkpoint_transactions;
+    DELETE FROM checkpoint_ledger_snapshots;
+    DELETE FROM checkpoint_account_snapshots;
+    DELETE FROM checkpoint_members;
+    DELETE FROM operation_checkpoints;
     DELETE FROM transaction_details;
     DELETE FROM transactions;
     DELETE FROM ledger_snapshots;
@@ -479,5 +488,73 @@ describe.sequential('trading-service core math logic', () => {
     assertDecimalEqual(afterB!.shares, '0');
     assertDecimalEqual(afterB!.cost, '0');
     assertDecimalEqual(afterB!.realizedProfit, '0');
+  });
+
+  it('creates checkpoints for write operations and restores the full ledger state', () => {
+    const member = createMember({
+      name: 'A',
+      joinDate: '2026-03-19T09:00:00.000Z',
+      initialCash: '1000',
+    });
+
+    executeBuy({
+      transTime: '2026-03-19T10:00:00.000Z',
+      price: '10',
+      totalFeeAmount: '0',
+      participants: [{ memberId: member.id, shares: '100' }],
+    });
+
+    const checkpointsAfterBuy = listOperationCheckpoints();
+    expect(checkpointsAfterBuy).toHaveLength(2);
+    expect(checkpointsAfterBuy[0].operationType).toBe('transaction.buy');
+    expect(checkpointsAfterBuy[1].operationType).toBe('member.create');
+
+    const afterBuyLedger = listMembersWithLatestLedger()[0].ledger;
+    const afterBuyAccount = getLatestPublicAccount();
+    expect(afterBuyAccount).not.toBeNull();
+
+    executeDividend({
+      transTime: '2026-03-19T11:00:00.000Z',
+      perShareDividend: '0.5',
+    });
+
+    executeSell({
+      transTime: '2026-03-19T12:00:00.000Z',
+      price: '12',
+      totalFeeAmount: '0',
+      participants: [{ memberId: member.id, shares: '50' }],
+    });
+
+    const restored = restoreToCheckpoint({
+      checkpointId: checkpointsAfterBuy[0].checkpointId,
+      restoreTime: '2026-03-19T13:00:00.000Z',
+    });
+
+    expect(restored.operationType).toBe('checkpoint.restore');
+    expect(restored.restoredFromCheckpointId).toBe(checkpointsAfterBuy[0].checkpointId);
+
+    const restoredLedger = listMembersWithLatestLedger()[0].ledger;
+    const restoredAccount = getLatestPublicAccount();
+    expect(restoredAccount).not.toBeNull();
+
+    assertDecimalEqual(restoredLedger.cash, afterBuyLedger.cash);
+    assertDecimalEqual(restoredLedger.shares, afterBuyLedger.shares);
+    assertDecimalEqual(restoredLedger.cost, afterBuyLedger.cost);
+    assertDecimalEqual(restoredLedger.avgPrice, afterBuyLedger.avgPrice);
+    assertDecimalEqual(restoredLedger.realizedProfit, afterBuyLedger.realizedProfit);
+    assertDecimalEqual(restoredAccount!.totalCash, afterBuyAccount!.totalCash);
+    assertDecimalEqual(restoredAccount!.totalShares, afterBuyAccount!.totalShares);
+
+    const transactions = listTransactions();
+    expect(transactions).toHaveLength(1);
+    expect(transactions[0].type).toBe('buy');
+    assertDecimalEqual(transactions[0].totalShares, '100');
+
+    const replayResult = validateReplayConsistency();
+    expect(replayResult.ok).toBe(true);
+
+    const checkpointsAfterRestore = listOperationCheckpoints();
+    expect(checkpointsAfterRestore[0].operationType).toBe('checkpoint.restore');
+    expect(checkpointsAfterRestore[0].restoredFromCheckpointId).toBe(checkpointsAfterBuy[0].checkpointId);
   });
 });

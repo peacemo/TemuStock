@@ -9,9 +9,11 @@ import type {
   HistoricalSnapshot,
   LedgerHistoryQuery,
   MemberWithLedger,
+  OperationCheckpointRecord,
   PublicAccountSnapshot,
   ReplayValidationResult,
   ReverseTransactionRequest,
+  RestoreCheckpointRequest,
   SellRequest,
   StockBonusRequest,
   TransactionDetailRecord,
@@ -34,6 +36,8 @@ type DesktopApi = {
   getPublicAccount: () => Promise<ApiResult<PublicAccountSnapshot | null>>;
   getHistoricalSnapshot: (payload: LedgerHistoryQuery) => Promise<ApiResult<HistoricalSnapshot>>;
   validateReplay: () => Promise<ApiResult<ReplayValidationResult>>;
+  listOperationCheckpoints: () => Promise<ApiResult<OperationCheckpointRecord[]>>;
+  restoreCheckpoint: (payload: RestoreCheckpointRequest) => Promise<ApiResult<OperationCheckpointRecord>>;
 };
 
 const api: DesktopApi = {
@@ -51,6 +55,8 @@ const api: DesktopApi = {
   getPublicAccount: () => ipcRenderer.invoke('account:latest'),
   getHistoricalSnapshot: (payload) => ipcRenderer.invoke('account:history-snapshot', payload),
   validateReplay: () => ipcRenderer.invoke('account:validate-replay'),
+  listOperationCheckpoints: () => ipcRenderer.invoke('checkpoint:list'),
+  restoreCheckpoint: (payload) => ipcRenderer.invoke('checkpoint:restore', payload),
 };
 
 contextBridge.exposeInMainWorld('desktopApi', api);
